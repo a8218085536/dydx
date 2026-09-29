@@ -1,0 +1,173 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    # cluster-kit resolves from GitHub Packages; the sibling checkouts' settings
+    # files use this token to read it.
+    permissions:
+      contents: read
+      packages: read
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Set up Java 21
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: 21
+          cache: maven
+
+      # match-common and the assets wire modules resolve from GitHub Packages at the
+      # versions pinned in pom.xml — no more producer checkouts at floating main.
+      - name: Build and test
+        run: mvn -B -s .mvn-settings.xml clean verify
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # Full-stack failover E2E (oms#41 / P5.1): real 3-node Aeron cluster +
+  # real single-node Assets Engine + real OMS + Postgres on the runner; kills
+  # the leader mid-load and asserts convergence + exact ledger invariants.
+  # See e2e/README.md.
+  e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      packages: read
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v7
+
+      # The E2E runs REAL producer binaries (match-cluster, assets-cluster, bridge),
+      # so it still checks the producers out — but at the shas in producers/, which
+      # the bump automation moves together with the pom pins. A floating main here
+      # meant the tested jar and the pinned wire could silently diverge.
+      #
+      # One lock file per producer: on a single file the two producers' bump PRs
+      # edited adjacent lines, and git needs an unchanged line between hunks, so
+      # merging either bump turned the other DIRTY (2026-08-12, a 16-deep queue).
+      # Separate files make the two bumps independently mergeable.
+      - name: Read producer pins
+        id: lock
+        run: |
+          set -euo pipefail
+          read_lock() { grep -vE '^\s*(#|$)' "producers/$1.lock" | tr -d '[:space:]'; }
+          pom_sha() { sed -nE "s|.*<$1\.version>[^<]*\.g([0-9a-f]+)</$1\.version>.*|\1|p" pom.xml; }
+
+          for P in match assets; do
+            LOCK=$(read_lock "$P")
+            PIN=$(pom_sha "$P")
+            [ -n "$LOCK" ] || { echo "producers/$P.lock is empty"; exit 1; }
+            [ -n "$PIN" ]  || { echo "pom.xml has no .g<sha> suffix on <$P.version>"; exit 1; }
+            # The pin names a commit and so does the lock. If they disagree the
+            # E2E would build one commit and resolve the wire artifact of
+            # another: green, and testing a combination nobody ships. That is
+            # exactly what a half-applied bump looks like, so fail loudly.
+            case "$LOCK" in
+              "$PIN"*) ;;
+              *) echo "producer pin skew for $P: pom.xml says g$PIN, producers/$P.lock says $LOCK"; exit 1 ;;
+            esac
+            echo "$P=$LOCK" >> "$GITHUB_OUTPUT"
+          done
+
+      - name: Check out match (cluster + match-common)
+        uses: actions/checkout@v7
+        with:
+          repository: openexch/match
+          ref: ${{ steps.lock.outputs.match }}
+          path: _match
+
+      - name: Check out assets (for assets-common/assets-cluster dependency)
+        uses: actions/checkout@v7
+        with:
+          repository: openexch/assets
+          ref: ${{ steps.lock.outputs.assets }}
+          path: _assets
+
+      - name: Set up Java 21
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: 21
+          cache: maven
+
+      # Aeron needs real socket buffers: the cluster log/replay channels run
+      # 64m terms, and the kernel default rmem_max (~208k) can't open their
+      # flow-control window — archive replay never connects and post-kill
+      # elections hang in "log replication has not progressed". Same tuning
+      # as match `make optimize-os` on dev boxes.
+      - name: Kernel socket buffers for Aeron
+        run: sudo sysctl -w net.core.rmem_max=16777216 net.core.wmem_max=16777216
+
+      - name: Build match-cluster jar
+        run: mvn -B -s _match/.mvn-settings.xml -f _match/pom.xml install -DskipTests -pl match-cluster -am
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # install also produces the shaded assets-cluster.jar and assets-bridge.jar
+      # the E2E launches as its single-node Assets Engine + settlement bridge.
+      - name: Install assets modules into local Maven repo
+        run: mvn -B -s _assets/.mvn-settings.xml -f _assets/pom.xml install -DskipTests -pl assets-common,assets-cluster,assets-bridge -am
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build OMS app jar
+        run: mvn -B -s .mvn-settings.xml package -DskipTests
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Failover E2E
+        env:
+          E2E_MATCH_JAR: _match/match-cluster/target/match-cluster.jar
+          E2E_ASSETS_JAR: _assets/assets-cluster/target/assets-cluster.jar
+          E2E_BRIDGE_JAR: _assets/assets-bridge/target/assets-bridge.jar
+          E2E_OMS_JAR: oms-app/target/oms-app-1.0-SNAPSHOT.jar
+          E2E_PG_USER: postgres
+          E2E_PG_PASSWORD: postgres
+          E2E_WORKDIR: ${{ runner.temp }}/e2e
+        run: python3 e2e/failover_e2e.py
+
+      - name: Upload logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: e2e-logs
+          path: ${{ runner.temp }}/e2e/logs
+
+  # Dependency CVEs + committed secrets (oms#41 / P5.1). Trivy covers both on a
+  # private repo without GitHub Advanced Security; triaged findings go in .trivyignore.
+  # Same job as match/admin-gateway (match#43, admin-gateway#27).
+  security:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Trivy scan (dependencies + secrets)
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          scan-type: fs
+          scanners: vuln,secret
+          severity: CRITICAL,HIGH
+          exit-code: 1
+          ignore-unfixed: true

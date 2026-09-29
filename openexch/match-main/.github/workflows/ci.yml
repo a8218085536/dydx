@@ -1,0 +1,467 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+
+# PR runs supersede each other: only the latest push to a branch is interesting.
+# Push and tag runs NEVER cancel each other, which is why they are grouped by sha
+# rather than by ref. Each one publishes an artifact addressed by its own commit,
+# and a bundle can name any of them, so a superseded run is a build that becomes
+# unfetchable later — exactly when someone is trying to replay an old incident.
+concurrency:
+  group: >-
+    ci-${{ github.workflow }}-${{
+      github.event_name == 'pull_request' && github.ref || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: read
+    # Market-data persistence integration tests (TimescaleIntegrationTest) run
+    # against this service; without MARKET_PG_TEST_URL they self-skip (Assume).
+    services:
+      timescaledb:
+        image: timescale/timescaledb:latest-pg16
+        env:
+          POSTGRES_DB: marketdata
+          POSTGRES_USER: market
+          POSTGRES_PASSWORD: ci
+        ports:
+          - "5432:5432"
+        options: >-
+          --health-cmd "pg_isready -U market -d marketdata"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+    env:
+      MARKET_PG_TEST_URL: jdbc:postgresql://localhost:5432/marketdata?user=market&password=ci
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Set up Java 21
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: 21
+          cache: maven
+
+      # The SBE codecs under match-common are committed sources that Maven
+      # regenerates at generate-sources from the schema XML (order-schema id=1 and
+      # settlement-journal id=3). A schema edit — or a stale hand-edit — that lands
+      # without the regenerated Java leaves the committed codecs describing a
+      # different wire than the schema, and the published match-common jar carries
+      # that drift to every consumer (this is how the G-1 stale SCHEMA_VERSION=2
+      # codecs survived: nothing regenerated them, so nothing noticed them). Fail
+      # the build on any diff so committed == schema is enforced, not trusted.
+      # git status (not `git diff --exit-code`) so a NEW but uncommitted codec is
+      # caught too — git diff ignores untracked files.
+      - name: SBE codec drift check
+        run: |
+          set -euo pipefail
+          mvn -B -s .mvn-settings.xml -pl match-common generate-sources
+          DRIFT=$(git status --porcelain --untracked-files=all -- \
+            match-common/src/main/java/com/match/infrastructure/generated/ \
+            match-common/src/main/java/com/match/infrastructure/journal/generated/)
+          if [ -n "$DRIFT" ]; then
+            echo "::error::Generated SBE codecs are out of sync with the schema. Run 'mvn -pl match-common generate-sources' and commit the result."
+            echo "$DRIFT"
+            git diff -- \
+              match-common/src/main/java/com/match/infrastructure/generated/ \
+              match-common/src/main/java/com/match/infrastructure/journal/generated/
+            exit 1
+          fi
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and test
+        run: mvn -B -s .mvn-settings.xml clean verify
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # Dependency CVEs + committed secrets (match#32 / P1.5). Trivy covers both on a
+  # private repo without GitHub Advanced Security; triaged findings go in .trivyignore.
+  security:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Trivy scan (dependencies + secrets)
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          scan-type: fs
+          scanners: vuln,secret
+          severity: CRITICAL,HIGH
+          exit-code: 1
+          ignore-unfixed: true
+
+  # Puts the shaded engine jar in S3 under its commit sha, so the demo box
+  # deploys by downloading rather than by compiling.
+  #
+  # Why the box does not build it: it is a 15 GB machine running the live money
+  # path with the matching engine busy-spinning on pinned cores, and a Maven
+  # build there takes RAM and CPU from it. And a bundle records the buildSha of
+  # the jar that wrote it, so replaying an old incident means booting that exact
+  # jar — which only works if it still exists somewhere other than a working
+  # tree that has since moved on.
+  #
+  # A job here rather than its own workflow so `needs` is a real gate: two
+  # workflows cannot depend on each other.
+  publish:
+    needs: [build, security]
+    # Opt-in per repo. Publishing needs an S3 bucket and an OIDC role that do not
+    # exist in a fresh clone or a fork, and a workflow that hard-fails on absent
+    # infrastructure turns main red for a reason unrelated to the code. Turn it on
+    # with: gh variable set ARTIFACT_PUBLISH --body true
+    if: github.event_name == 'push' && vars.ARTIFACT_PUBLISH == 'true'
+    # One publish at a time per repo, the next one queues. Serialising the writes
+    # is what keeps them ordered.
+    #
+    # Worth knowing the limit: GitHub keeps ONE pending run per group, so a third
+    # publish arriving while one runs and one waits displaces the waiting one.
+    # That is why the pointer move below is also written to only ever go forward,
+    # rather than trusting the queue to deliver in order.
+    concurrency:
+      group: publish-${{ github.repository }}
+      cancel-in-progress: false
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write # deploys match-common (the cross-repo wire artifact) to GitHub Packages
+      id-token: write # OIDC: no long-lived AWS keys in this repo
+    env:
+      BUCKET: openexch-build-artifacts-675715936685
+      # The prefix builds are addressed by. The box asks for a named file inside it,
+      # so more files under the same prefix is additive: nothing that reads it today
+      # has to change.
+      ARTIFACT: match-cluster
+      # Published under that prefix, as <name>/target/<name>.jar. The engine jar is
+      # what the box deploys; the load generator rides along because a published
+      # benchmark has to be re-runnable from the artifacts it was measured on, and a
+      # harness rebuilt from source months later is a different harness.
+      JARS: match-cluster match-loadtest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Set up Java 21
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: 21
+          cache: maven
+
+      # -DbuildSha is not decoration. The jar's manifest carries it, every
+      # bundle's manifest copies it from there, and a replay uses it to find the
+      # binary that produced the state. Left unset the property defaults to
+      # "unknown", which is honest and useless: the build refuses to guess, so
+      # the guessing has to not happen here.
+      - name: Package
+        run: |
+          set -euo pipefail
+          # Only the modules this job publishes, and their in-reactor
+          # dependencies. A full reactor build would also build what this job
+          # never ships (match-gateway), and building it to throw it away is
+          # work either way. (The assets repo's twin of this step has an extra
+          # cross-repo install here; match needs none.)
+          mvn -B -s .mvn-settings.xml clean package -pl "${JARS// /,}" -am -DskipTests \
+            -DbuildSha=$(git rev-parse --short HEAD)
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Verify every jar carries its sha
+        run: |
+          set -euo pipefail
+          for m in ${JARS}; do
+            JAR=$m/target/$m.jar
+            [ -f "$JAR" ] || { echo "::error::${JARS} lists $m but $JAR was not built"; exit 1; }
+            unzip -p "$JAR" META-INF/MANIFEST.MF | tr -d '\r' | grep "^Build-Sha:" | sed "s/^/$m /"
+            unzip -p "$JAR" META-INF/MANIFEST.MF | tr -d '\r' \
+              | grep -q "^Build-Sha: $(git rev-parse --short HEAD)$" || {
+              echo "::error::$m's Build-Sha does not match this commit"
+              exit 1
+            }
+          done
+
+      # Where this build belongs. A branch push is addressed by commit sha and is
+      # fetchable but not deployable in production; a tag push is addressed by
+      # the tag under releases/ and is the only thing the release channel will
+      # install. Both are published: replaying an old incident needs the commit
+      # build that produced its state, whether or not it was ever released.
+      - name: Work out where this build belongs
+        id: dest
+        run: |
+          set -euo pipefail
+          if [[ "${GITHUB_REF}" == refs/tags/* ]]; then
+            TAG="${GITHUB_REF#refs/tags/}"
+            echo "prefix=${ARTIFACT}/releases/${TAG}" >> "$GITHUB_OUTPUT"
+            echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+            echo "release=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "prefix=${ARTIFACT}/${GITHUB_SHA}" >> "$GITHUB_OUTPUT"
+            echo "tag=" >> "$GITHUB_OUTPUT"
+            echo "release=false" >> "$GITHUB_OUTPUT"
+          fi
+          # Stamped once here and reused, so the value in the manifest is the same
+          # one the pointer comparison sorts on. Two calls to date would be two
+          # different answers to "when was this built".
+          echo "builtAt=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: arn:aws:iam::675715936685:role/openexch-ci-artifact-publisher
+          aws-region: eu-central-1
+
+      # Payload first, manifest last. The same commit-marker discipline the
+      # ledger archive uses: S3 has no atomic multi-object write, so until the
+      # manifest lands the prefix is an upload in progress and the box must
+      # refuse to deploy from it.
+      # On a tag, the release version goes INTO the jar manifest before it is
+      # published. The pom is deliberately not bumped (the tag is the version,
+      # per docs/RELEASING.md), which would otherwise leave the jar unable to say
+      # which release it belongs to. Stamped here rather than guessed later.
+      - name: Stamp the release version into the jar
+        if: steps.dest.outputs.release == 'true'
+        env:
+          TAG: ${{ steps.dest.outputs.tag }}
+        run: |
+          set -euo pipefail
+          printf 'Implementation-Version: %s\n' "$TAG" > version.mf
+          for m in ${JARS}; do
+            JAR=$m/target/$m.jar
+            jar ufm "$JAR" version.mf
+
+            # Both entries are re-checked AFTER the merge, not just the new one.
+            # jar ufm rewrites the manifest, and a stamp that silently dropped
+            # Build-Sha would leave a released jar that cannot be traced back to
+            # the commit that built it, which is the one thing a bundle needs from
+            # it. Verify what you changed, and what you changed it around.
+            MF=$(unzip -p "$JAR" META-INF/MANIFEST.MF | tr -d '\r')
+            echo "$MF" | grep -E '^(Implementation-Version|Build-Sha):' | sed "s/^/$m /"
+            echo "$MF" | grep -q "^Implementation-Version: ${TAG}$" || {
+              echo "::error::the release version did not land in $m's manifest"
+              exit 1
+            }
+            echo "$MF" | grep -q "^Build-Sha: $(git rev-parse --short HEAD)$" || {
+              echo "::error::stamping the version dropped Build-Sha from $m's manifest"
+              exit 1
+            }
+          done
+
+      - name: Publish
+        env:
+          DEST: ${{ steps.dest.outputs.prefix }}
+          TAG: ${{ steps.dest.outputs.tag }}
+          BUILT_AT: ${{ steps.dest.outputs.builtAt }}
+        run: |
+          set -euo pipefail
+          PREFIX="s3://${BUCKET}/${DEST}"
+
+          # Every payload first, manifest last: the manifest is the commit marker,
+          # so it may not name a file that is not up yet.
+          ENTRIES=""
+          for m in ${JARS}; do
+            JAR=$m/target/$m.jar
+            SUM=$(sha256sum "$JAR" | cut -d' ' -f1)
+            BYTES=$(stat -c%s "$JAR")
+            aws s3 cp "$JAR" "${PREFIX}/${m}.jar" \
+              --checksum-algorithm SHA256 --no-progress
+            ENTRIES="${ENTRIES}${ENTRIES:+,}{\"name\": \"${m}.jar\", \"sha256\": \"${SUM}\", \"bytes\": ${BYTES}}"
+          done
+
+          # The tag field is what makes a release prefix self-describing. The box
+          # refuses a release prefix whose manifest carries no tag, which is how
+          # a per-commit build copied into releases/ gets caught rather than
+          # deployed.
+          cat > manifest.json <<JSON
+          {
+            "repo": "${ARTIFACT}",
+            "sha": "${GITHUB_SHA}",
+            "shortSha": "$(git rev-parse --short HEAD)",
+            "ref": "${GITHUB_REF}",
+            "tag": "${TAG}",
+            "builtAt": "${BUILT_AT}",
+            "runId": "${GITHUB_RUN_ID}",
+            "artifacts": [${ENTRIES}]
+          }
+          JSON
+          python3 -c 'import json,sys; json.load(open("manifest.json"))' || {
+            echo "::error::the manifest this job just wrote is not valid JSON"
+            exit 1
+          }
+          aws s3 cp manifest.json "${PREFIX}/manifest.json" --no-progress
+
+      # A publish step that cannot tell "uploaded" from "did nothing" is a step
+      # that says yes. cluster-kit's first publish reported success having
+      # uploaded nothing, and only the consumers' builds noticed.
+      - name: Verify the uploads landed
+        env:
+          DEST: ${{ steps.dest.outputs.prefix }}
+        run: |
+          set -euo pipefail
+          for m in ${JARS}; do
+            aws s3 cp "s3://${BUCKET}/${DEST}/${m}.jar" ./roundtrip --no-progress
+            diff <(sha256sum < "$m/target/$m.jar") <(sha256sum < ./roundtrip) \
+              || { echo "::error::$m did not round-trip"; exit 1; }
+            echo "$m round-tripped"
+          done
+
+      # Branch pushes only. The pointer moves after the payload is verified
+      # readable, so "latest" can never name a prefix that is not fully there.
+      #
+      # Releases deliberately have NO pointer: the newest release is computed by
+      # listing the prefixes. A pointer would be moved by whichever run finished
+      # last, and two tags' runs can finish out of order, which would leave the
+      # release channel installing an older version than it had.
+      - name: Move the latest pointer
+        if: steps.dest.outputs.release == 'false'
+        env:
+          BUILT_AT: ${{ steps.dest.outputs.builtAt }}
+        run: |
+          set -euo pipefail
+
+          # Compare before writing. Serialising publishes makes them ordered in
+          # the common case, but a displaced pending run or a retried old one can
+          # still arrive late, and a pointer that went backwards would hand the
+          # box an older build than it already had. ISO-8601 UTC sorts
+          # lexicographically, so the string comparison IS a time comparison.
+          CURRENT=$(aws s3 cp "s3://${BUCKET}/${ARTIFACT}/latest" - 2>/dev/null || true)
+          if [ -n "$CURRENT" ] && [ "$CURRENT" != "${GITHUB_SHA}" ]; then
+            CURRENT_AT=$(aws s3 cp "s3://${BUCKET}/${ARTIFACT}/${CURRENT}/manifest.json" - \
+              2>/dev/null | jq -r '.builtAt // ""' || true)
+            if [ -n "$CURRENT_AT" ] && [ "$CURRENT_AT" \> "$BUILT_AT" ]; then
+              echo "latest already names ${CURRENT} built at ${CURRENT_AT}, which is newer than"
+              echo "this build (${BUILT_AT}); leaving the pointer alone."
+              exit 0
+            fi
+          fi
+
+          printf '%s' "${GITHUB_SHA}" > latest
+          aws s3 cp latest "s3://${BUCKET}/${ARTIFACT}/latest" \
+            --content-type text/plain --no-progress
+
+      - name: Say what was published
+        env:
+          DEST: ${{ steps.dest.outputs.prefix }}
+        run: echo "published s3://${BUCKET}/${DEST}"
+
+      # ---- cross-repo wire artifact ----
+      # assets and oms consume com.match:match-common. Until now they resolved it by
+      # checking out match at FLOATING main and mvn-installing a permanently-static
+      # "1.0" into ~/.m2 — a mutable coordinate whose bytes change under every
+      # consumer silently (and whose stale local copies decode the wire wrongly with
+      # zero errors). From here every main push deploys an IMMUTABLE pinned version,
+      # 1.0.<utcstamp>.g<sha>, to GitHub Packages; consumers pin it in their poms.
+      # Runs after the S3 steps so a Packages failure cannot block the box artifact;
+      # it still fails the job loudly (a wire artifact that silently did not publish
+      # is how consumers drift).
+      - name: Deploy match-common to GitHub Packages
+        id: wire
+        env:
+          GITHUB_ACTOR: ${{ github.actor }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          V="1.0.$(date -u +%Y%m%d%H%M%S).g${GITHUB_SHA::7}"
+          # Rewrite the reactor version in CI's throwaway checkout only; nothing is committed.
+          mvn -B -q org.codehaus.mojo:versions-maven-plugin:2.16.2:set \
+            -DnewVersion="$V" -DgenerateBackupPoms=false
+          # ".," so the parent pom deploys too: match-common's pom references it, and a
+          # consumer resolving the module needs the parent resolvable as well.
+          mvn -B -s .mvn-settings.xml deploy -pl .,match-common -am -DskipTests \
+            -DaltDeploymentRepository=github::https://maven.pkg.github.com/openexch/match
+          echo "version=$V" >> "$GITHUB_OUTPUT"
+          echo "published com.match:match-common:$V"
+
+      # Consumers must MOVE to the new version, and no human remembers that reliably:
+      # open the bump PRs from here. Commits go through the contents API so GitHub
+      # signs them (both consumer repos require signed commits). Needs a cross-repo
+      # fine-grained PAT in the CONSUMER_BUMP_TOKEN secret; until the secret exists
+      # this step skips and says so. continue-on-error: a failed bump must not
+      # unpublish anything — it shows yellow and the next push retries.
+      #
+      # ONE branch per producer, not one per version. A version-scoped branch name
+      # opened a NEW pr on every push, and because every bump edits the same two
+      # lines of pom.xml (and, in oms, the same producers.lock), the queue was
+      # self-conflicting: merging any one of them turned all the others DIRTY. On
+      # 2026-08-12 that queue reached 16 open PRs in oms and 11 in assets, all
+      # blocked on required_signatures, all superseded by each other. The fixed
+      # branch is instead RESET to the consumer's main on every push, so the open
+      # PR is always exactly this bump on top of current main: never stale, never
+      # conflicting with its own base, and never more than one per producer.
+      - name: Open consumer bump PRs
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.CONSUMER_BUMP_TOKEN }}
+          V: ${{ steps.wire.outputs.version }}
+        run: |
+          set -euo pipefail
+          if [ -z "${GH_TOKEN}" ]; then
+            echo "CONSUMER_BUMP_TOKEN not set; skipping consumer bump PRs (pins go stale until it exists)."
+            exit 0
+          fi
+          for REPO in assets oms; do
+            BRANCH="bump/match-common"
+            BASE=$(gh api "repos/openexch/${REPO}/git/ref/heads/main" --jq .object.sha)
+            # Create the branch, or force it back onto main if a previous bump is
+            # still open. Force is safe here precisely because nothing but this job
+            # writes this branch, and whatever it carried was an older version of
+            # the very pin about to be rewritten.
+            if gh api "repos/openexch/${REPO}/git/ref/heads/${BRANCH}" >/dev/null 2>&1; then
+              gh api -X PATCH "repos/openexch/${REPO}/git/refs/heads/${BRANCH}" \
+                -f sha="$BASE" -F force=true >/dev/null
+            else
+              gh api -X POST "repos/openexch/${REPO}/git/refs" \
+                -f ref="refs/heads/${BRANCH}" -f sha="$BASE" >/dev/null
+            fi
+            # pom.xml: swap the <match.version> property in place.
+            CONTENT=$(gh api "repos/openexch/${REPO}/contents/pom.xml?ref=${BRANCH}" --jq .content | base64 -d)
+            NEW=$(printf '%s' "$CONTENT" \
+              | sed -E "s|(<match.version>)[^<]+(</match.version>)|\1${V}\2|")
+            if [ "$CONTENT" = "$NEW" ]; then
+              echo "${REPO}: no <match.version> property found; skipping"; continue
+            fi
+            SHA=$(gh api "repos/openexch/${REPO}/contents/pom.xml?ref=${BRANCH}" --jq .sha)
+            gh api -X PUT "repos/openexch/${REPO}/contents/pom.xml" \
+              -f message="build: match-common ${V}" \
+              -f content="$(printf '%s' "$NEW" | base64 -w0)" \
+              -f sha="$SHA" -f branch="$BRANCH" >/dev/null
+            # oms also records the producing sha for its e2e checkout pin. One
+            # file per producer, so this bump and the assets one never touch the
+            # same lines and stay independently mergeable. oms's e2e fails if
+            # this write is skipped while the pom pin moved, so a partial bump
+            # is loud rather than a green build of a combination nobody ships.
+            if [ "$REPO" = "oms" ]; then
+              LPATH="producers/match.lock"
+              LSHA=$(gh api "repos/openexch/oms/contents/${LPATH}?ref=${BRANCH}" --jq .sha 2>/dev/null || true)
+              if [ -n "$LSHA" ]; then
+                LOCK=$(gh api "repos/openexch/oms/contents/${LPATH}?ref=${BRANCH}" --jq .content | base64 -d \
+                  | sed -E "s|^[0-9a-f]{7,40}$|${GITHUB_SHA}|")
+                gh api -X PUT "repos/openexch/oms/contents/${LPATH}" \
+                  -f message="build: ${LPATH} match=${GITHUB_SHA::7}" \
+                  -f content="$(printf '%s' "$LOCK" | base64 -w0)" \
+                  -f sha="$LSHA" -f branch="$BRANCH" >/dev/null
+              else
+                echo "oms: ${LPATH} missing; pom pin moved without the lock (e2e will fail loudly)"
+              fi
+            fi
+            # Reuse the open PR when there is one: retitle it to the version it now
+            # carries (a stale title is a lie about what would merge) instead of
+            # stacking another PR behind it.
+            BODY="Automated wire-artifact bump from openexch/match@${GITHUB_SHA::7}. CI green = the new wire decodes. This PR is REUSED by every match main push: its branch is reset onto ${REPO}'s main and re-stamped, so it always shows the current pin and never has to be rebased. Commits are unsigned BY DESIGN — signing keys never leave the operator's vault, so automation cannot sign. Where the base branch requires signatures: re-sign locally, then merge (the operator tooling squashes this PR into one signed commit and force-pushes; auto-merge finishes the rest)."
+            PR=$(gh pr list --repo "openexch/${REPO}" --head "$BRANCH" --state open --json number --jq '.[0].number // empty')
+            if [ -n "$PR" ]; then
+              gh pr edit "$PR" --repo "openexch/${REPO}" --title "build: match-common ${V}" --body "$BODY"
+              echo "${REPO}: refreshed existing bump PR #${PR} to ${V}"
+            else
+              gh pr create --repo "openexch/${REPO}" --base main --head "$BRANCH" \
+                --title "build: match-common ${V}" --body "$BODY"
+            fi
+            gh pr merge --repo "openexch/${REPO}" --auto --squash "$BRANCH" \
+              || echo "${REPO}: auto-merge unavailable; PR stays open for a human"
+          done

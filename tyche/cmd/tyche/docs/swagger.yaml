@@ -1,0 +1,425 @@
+definitions:
+  proto.Balance:
+    properties:
+      address:
+        description: 钱包地址
+        example: 0x51E72BDbA3A6Fc6337251581CB95625fa3A7767F
+        type: string
+    type: object
+  proto.BalanceResponse:
+    properties:
+      address:
+        description: 钱包地址
+        example: 0x51E72BDbA3A6Fc6337251581CB95625fa3A7767F
+        type: string
+      wei:
+        description: 余额（WEI）
+        example: "49335849638413224831"
+        type: string
+    type: object
+  proto.Call:
+    properties:
+      address:
+        description: 合约地址
+        example: 0xa19844250b2b37c8518cb837b58ffed67f2e915D
+        type: string
+      args:
+        additionalProperties:
+          type: string
+        description: 合约方法参数
+        example:
+          id: "1020"
+        type: object
+      method:
+        description: 方法名(大小写敏感)
+        example: getDNA
+        type: string
+    type: object
+  proto.Create:
+    type: object
+  proto.CreateResponse:
+    properties:
+      address:
+        description: 钱包地址
+        example: 0x51E72BDbA3A6Fc6337251581CB95625fa3A7767F
+        type: string
+      key:
+        description: 私钥
+        example: 870cb32ae1445b2f736025d4dbf0546843a91e3cf2851bb07f5d14b3463d27b9
+        type: string
+    type: object
+  proto.Minter:
+    properties:
+      balance:
+        description: 是否返回余额
+        example: true
+        type: boolean
+      chainID:
+        description: 是否返回链ID
+        example: false
+        type: boolean
+      nonceAt:
+        description: 是否返回 Nonce 信息
+        example: true
+        type: boolean
+    type: object
+  proto.MinterResponse:
+    properties:
+      address:
+        description: 矿工地址
+        example: 0x51E72BDbA3A6Fc6337251581CB95625fa3A7767F
+        type: string
+      balance:
+        description: 余额（WEI）
+        example: "49335849638413224831"
+        type: string
+      chainID:
+        description: 链ID
+        example: "80001"
+        type: string
+      latestNonceAt:
+        description: 已被链上确认的最新 Nonce
+        example: "123"
+        type: string
+      localNonceAt:
+        description: 本地缓存的新交易可用 Nonce
+        example: "111"
+        type: string
+      pendingNonceAt:
+        description: 链上返回的新交易可用 Nonce
+        example: "150"
+        type: string
+    type: object
+  proto.Order:
+    properties:
+      orderID:
+        description: 订单ID
+        example: 00ed4bf26f1e48e79f3e4d0b430fe380
+        type: string
+    type: object
+  proto.OrderResponse:
+    properties:
+      createdAt:
+        description: 创建时间
+        example: "1652174442"
+        type: string
+      nonce:
+        description: Nonce 值
+        example: "9159"
+        type: string
+      numberOfRetries:
+        description: 重试次数
+        example: 1
+        type: integer
+      orderID:
+        description: 订单ID
+        example: 00ed4bf26f1e48e79f3e4d0b430fe380
+        type: string
+      reason:
+        description: '错误或失败原因（仅当 Status 为: fail 或 error 时有效）'
+        example: ""
+        type: string
+      status:
+        description: '状态（可选值: pending | sent | succ | fail | error）'
+        example: succ
+        type: string
+      txHash:
+        description: 交易Hash
+        example: 0x66e3076f604491c0944b3c885d451424fd644c4ebf61c333e0d4622d567af38b
+        type: string
+      updatedAt:
+        description: 更新时间
+        example: "1652672618"
+        type: string
+    type: object
+  proto.Response:
+    properties:
+      code:
+        description: 错误码, 200-成功， 其它为失败
+        example: 200
+        type: integer
+      data:
+        description: 数据对象
+      msg:
+        description: 错误消息
+        example: succ
+        type: string
+    type: object
+  proto.Sign:
+    properties:
+      key:
+        description: 签名私钥
+        example: 870cb32ae1445b2f736025d4dbf0546843a91e3cf2851bb07f5d14b3463d27b9
+        type: string
+      types:
+        description: 类型数组
+        example:
+        - address
+        - uint256
+        - address
+        - uint256
+        - uint256
+        items:
+          type: string
+        type: array
+      values:
+        description: 值数组
+        example:
+        - 0x00b5d3cb5fB6D2B69cE249707C398843d2Da5004
+        - "100000339"
+        - 0xeD24FC36d5Ee211Ea25A80239Fb8C4Cfd80f12Ee
+        - "9000000000000000000"
+        - "1653649525"
+        items:
+          type: string
+        type: array
+    type: object
+  proto.SignResponse:
+    properties:
+      hash:
+        description: 数据Hash
+        example: 0x6c97990b8853fe45851ba955af61231d2557114cac46943c1b0eef93d7023aa2
+        type: string
+      sign:
+        description: 签名
+        example: 0x6f7a8ccc3d18512700bf82a6a0ca3599b0a382744f93dc052bf13374f62f562f578aac9c27deff815e88328ee9f17e95150309a0bd145476aae3a435ed7f79f21c
+        type: string
+    type: object
+  proto.Transact:
+    properties:
+      address:
+        description: 合约地址
+        example: 0xa19844250b2b37c8518cb837b58ffed67f2e915D
+        type: string
+      args:
+        additionalProperties:
+          type: string
+        description: 合约方法参数
+        example:
+          amounts: '[]int{12}'
+          data: nothing
+          ids: '[]int{2001}'
+          to: 0xa70a1a4fb9143e6e9ef8b44d01c98794626b21b3
+        type: object
+      method:
+        description: 方法名(大小写敏感)
+        example: mint
+        type: string
+      orderID:
+        description: 订单ID
+        example: ORDER_001
+        type: string
+    type: object
+info:
+  contact: {}
+  description: |-
+    Tyche 服务的目标是简化区块链 Dapp 的开发。
+
+    你不必关心, 甚至不必理解 gasLimit， gasPrice， nonce 等区块链相关的技术细节。我们通过类似支付系统的交互流程（请求/回调）， 帮助你快速构建自己的 Dapp 应用。
+  title: Tyche 服务
+  version: "1.0"
+paths:
+  /tyche/api/call:
+    post:
+      consumes:
+      - application/json
+      description: |-
+        调用智能合约中的方法
+
+        Call executes a message call transaction, which is directly executed in the VM of the node, but never mined into the blockchain.
+      parameters:
+      - description: 请求参数
+        in: body
+        name: object
+        required: true
+        schema:
+          allOf:
+          - $ref: '#/definitions/proto.Call'
+          - properties:
+              args:
+                type: object
+            type: object
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            allOf:
+            - $ref: '#/definitions/proto.Response'
+            - properties:
+                data:
+                  type: object
+              type: object
+      tags:
+      - 智能合约
+  /tyche/api/order/get:
+    post:
+      consumes:
+      - application/json
+      description: |
+        获得订单信息
+      parameters:
+      - description: 请求参数
+        in: body
+        name: object
+        required: true
+        schema:
+          $ref: '#/definitions/proto.Order'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            allOf:
+            - $ref: '#/definitions/proto.Response'
+            - properties:
+                data:
+                  $ref: '#/definitions/proto.OrderResponse'
+              type: object
+      tags:
+      - 订单
+  /tyche/api/transact:
+    post:
+      consumes:
+      - application/json
+      description: |-
+        调用智能合约中的付费方法
+
+        Transact invokes the (paid) contract method with params as input values.
+      parameters:
+      - description: 请求参数
+        in: body
+        name: object
+        required: true
+        schema:
+          allOf:
+          - $ref: '#/definitions/proto.Transact'
+          - properties:
+              args:
+                type: object
+            type: object
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            allOf:
+            - $ref: '#/definitions/proto.Response'
+            - properties:
+                data:
+                  type: object
+              type: object
+      tags:
+      - 智能合约
+  /tyche/api/wallet/balance_at:
+    post:
+      consumes:
+      - application/json
+      description: |
+        获得钱包余额
+      parameters:
+      - description: 请求参数
+        in: body
+        name: object
+        required: true
+        schema:
+          $ref: '#/definitions/proto.Balance'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            allOf:
+            - $ref: '#/definitions/proto.Response'
+            - properties:
+                data:
+                  $ref: '#/definitions/proto.BalanceResponse'
+              type: object
+      tags:
+      - 钱包
+  /tyche/api/wallet/create:
+    post:
+      consumes:
+      - application/json
+      description: |
+        创建一个钱包
+      parameters:
+      - description: 请求参数
+        in: body
+        name: object
+        required: true
+        schema:
+          $ref: '#/definitions/proto.Create'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            allOf:
+            - $ref: '#/definitions/proto.Response'
+            - properties:
+                data:
+                  $ref: '#/definitions/proto.CreateResponse'
+              type: object
+      tags:
+      - 钱包
+  /tyche/api/wallet/minter:
+    post:
+      consumes:
+      - application/json
+      description: |
+        获取矿工信息
+      parameters:
+      - description: 请求参数
+        in: body
+        name: object
+        required: true
+        schema:
+          $ref: '#/definitions/proto.Minter'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            allOf:
+            - $ref: '#/definitions/proto.Response'
+            - properties:
+                data:
+                  $ref: '#/definitions/proto.MinterResponse'
+              type: object
+      tags:
+      - 钱包
+  /tyche/api/wallet/sign:
+    post:
+      consumes:
+      - application/json
+      description: |
+        对数据签名
+      parameters:
+      - description: 请求参数
+        in: body
+        name: object
+        required: true
+        schema:
+          $ref: '#/definitions/proto.Sign'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            allOf:
+            - $ref: '#/definitions/proto.Response'
+            - properties:
+                data:
+                  $ref: '#/definitions/proto.SignResponse'
+              type: object
+      tags:
+      - 钱包
+swagger: "2.0"

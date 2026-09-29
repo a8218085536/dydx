@@ -1,0 +1,429 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>FlyDEX 飞蝶 · 视觉识别系统 V1</title>
+<style>
+  :root{
+    --green:#00D632; --lgreen:#B7F2C0; --mint:#E9F7EC; --dgreen:#06351A; --mgreen:#00A028;
+    --ink:#0A0A0A; --gray:#8A8A8A; --gray2:#B5B5B5; --line:#ECECEC; --card:#F5F6F5; --red:#F6465D;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{font-family:"Helvetica Neue",Inter,Arial,"PingFang SC","Microsoft YaHei",sans-serif;background:#fff;color:var(--ink);-webkit-font-smoothing:antialiased;line-height:1.6}
+  .wrap{max-width:1080px;margin:0 auto;padding:0 28px 80px}
+
+  /* 拉丝纹理 */
+  .brush{background:
+    repeating-linear-gradient(92deg, rgba(0,214,50,.045) 0 2px, rgba(255,255,255,0) 2px 7px),
+    linear-gradient(180deg,#FAFFFB 0%,#F2FBF4 100%);}
+
+  /* hero */
+  .hero{padding:72px 28px 56px;text-align:center;border-bottom:1px solid var(--line)}
+  .hero .mark{width:150px;margin:0 auto 18px}
+  .hero h1{font-size:54px;letter-spacing:-.03em;font-weight:800}
+  .hero h1 span{color:var(--green)}
+  .hero .cn{font-size:24px;font-weight:800;letter-spacing:.5em;margin-top:6px;padding-left:.5em}
+  .hero .sub{color:var(--gray);font-size:15px;margin-top:14px}
+  .hero .tag{display:inline-block;margin-top:18px;background:var(--ink);color:var(--green);font-weight:800;font-size:13px;padding:8px 20px;border-radius:999px;letter-spacing:.08em}
+
+  .sec{margin-top:64px}
+  .sec-num{display:inline-grid;place-items:center;width:34px;height:34px;border-radius:10px;background:var(--green);color:#003a0e;font-weight:800;font-size:16px;margin-right:12px;vertical-align:middle}
+  .sec h2{display:inline;font-size:26px;letter-spacing:-.02em;font-weight:800;vertical-align:middle}
+  .sec .lead{color:#555;font-size:14.5px;margin:14px 0 22px;max-width:760px}
+
+  .grid{display:grid;gap:16px}
+  .g2{grid-template-columns:1fr 1fr} .g3{grid-template-columns:1fr 1fr 1fr} .g4{grid-template-columns:repeat(4,1fr)}
+  @media(max-width:860px){.g2,.g3,.g4{grid-template-columns:1fr 1fr}}
+  .card{border:1px solid var(--line);border-radius:20px;padding:22px;background:#fff}
+  .card h4{font-size:15px;font-weight:800;margin-bottom:6px}
+  .card p{font-size:13px;color:#666}
+  .cap{font-size:12px;color:var(--gray);margin-top:10px;text-align:center}
+
+  /* logo showcase */
+  .logo-stage{border-radius:24px;padding:46px 20px;display:grid;place-items:center}
+  .logo-stage.dark{background:#0A0A0A}
+  .logo-stage.green{background:var(--green)}
+  .logo-row{display:flex;align-items:center;gap:18px;justify-content:center}
+  .wordmark{font-size:44px;font-weight:800;letter-spacing:-.02em}
+  .wordmark i{font-style:normal;color:var(--green)}
+
+  /* colors */
+  .sw{border-radius:18px;overflow:hidden;border:1px solid var(--line)}
+  .sw .chip{height:92px}
+  .sw .info{padding:12px 14px;background:#fff}
+  .sw .nm{font-weight:800;font-size:14px}
+  .sw .hex{font-size:12px;color:var(--gray);font-family:ui-monospace,Menlo,monospace;margin-top:2px}
+  .ratio{display:flex;height:52px;border-radius:14px;overflow:hidden;margin-top:16px;border:1px solid var(--line)}
+  .ratio div{display:grid;place-items:center;font-size:11.5px;font-weight:800}
+
+  /* type */
+  .type-demo{border:1px solid var(--line);border-radius:20px;padding:26px}
+  .type-demo .t1{font-size:34px;font-weight:800;letter-spacing:-.03em}
+  .type-demo .t2{font-size:20px;font-weight:800;margin-top:10px}
+  .type-demo .t3{font-size:14px;color:#555;margin-top:8px}
+  .type-demo .num{font-family:ui-monospace,"SF Mono",Menlo,monospace;font-size:26px;font-weight:700;margin-top:14px;letter-spacing:.01em}
+  .type-demo .num b{color:var(--green)} .type-demo .num i{color:var(--red);font-style:normal}
+
+  /* mascot */
+  .mascot-stage{border-radius:24px;padding:34px 16px;display:grid;place-items:center}
+  .mascot-row{display:grid;grid-template-columns:repeat(4,1fr);gap:14px;margin-top:16px}
+  @media(max-width:860px){.mascot-row{grid-template-columns:1fr 1fr}}
+
+  /* icons */
+  .icon-grid{display:grid;grid-template-columns:repeat(6,1fr);gap:14px}
+  @media(max-width:860px){.icon-grid{grid-template-columns:repeat(3,1fr)}}
+  .icon-cell{border:1px solid var(--line);border-radius:16px;padding:16px 8px 12px;text-align:center}
+  .icon-cell svg{width:34px;height:34px}
+  .icon-cell .nm{font-size:12px;font-weight:700;margin-top:8px;color:#333}
+
+  /* pills & ui */
+  .pill{border-radius:999px;font-weight:800;display:inline-flex;align-items:center;justify-content:center;padding:14px 30px;font-size:15px;border:none;cursor:default}
+  .pill-blk{background:#000;color:#fff}.pill-grn{background:var(--green);color:#003a0e}.pill-lg{background:var(--lgreen);color:var(--dgreen)}.pill-line{background:#fff;border:2px solid #E2E2E2;color:#333}
+  .badge-row{display:flex;gap:10px;flex-wrap:wrap;margin-top:14px}
+  .lvl{display:inline-flex;align-items:center;gap:7px;border-radius:999px;padding:7px 16px;font-size:13px;font-weight:800;border:1.5px solid transparent}
+
+  table{width:100%;border-collapse:collapse;font-size:13.5px;margin-top:14px}
+  th{background:var(--mint);font-weight:800;text-align:left;padding:10px 12px;border:1px solid #DDEEE0}
+  td{padding:10px 12px;border:1px solid var(--line);color:#444}
+
+  .donts{display:grid;grid-template-columns:repeat(4,1fr);gap:14px}
+  @media(max-width:860px){.donts{grid-template-columns:1fr 1fr}}
+  .dont{border:1px solid var(--line);border-radius:16px;padding:14px;text-align:center;font-size:12.5px;color:#666}
+  .dont .x{color:var(--red);font-weight:800;margin-bottom:6px}
+  .foot{margin-top:70px;padding-top:24px;border-top:1px solid var(--line);text-align:center;color:var(--gray);font-size:12.5px}
+</style>
+</head>
+<body>
+
+<!-- ============ HERO ============ -->
+<div class="hero brush">
+  <div class="mark">
+    <svg viewBox="0 0 200 170">
+      <g>
+        <!-- left wing: bid depth bars -->
+        <rect x="8"  y="30" width="76" height="20" rx="10" fill="#00D632"/>
+        <rect x="24" y="56" width="60" height="20" rx="10" fill="#00D632" opacity=".82"/>
+        <rect x="38" y="82" width="46" height="20" rx="10" fill="#00D632" opacity=".62"/>
+        <rect x="52" y="108" width="32" height="20" rx="10" fill="#00D632" opacity=".42"/>
+        <!-- right wing: ask depth bars -->
+        <rect x="116" y="30" width="76" height="20" rx="10" fill="#06351A"/>
+        <rect x="116" y="56" width="60" height="20" rx="10" fill="#06351A" opacity=".82"/>
+        <rect x="116" y="82" width="46" height="20" rx="10" fill="#06351A" opacity=".62"/>
+        <rect x="116" y="108" width="32" height="20" rx="10" fill="#06351A" opacity=".42"/>
+        <!-- body -->
+        <rect x="94" y="34" width="12" height="100" rx="6" fill="#0A0A0A"/>
+        <circle cx="100" cy="24" r="9" fill="#0A0A0A"/>
+        <path d="M93 17 Q84 6 76 4 M107 17 Q116 6 124 4" stroke="#0A0A0A" stroke-width="5" fill="none" stroke-linecap="round"/>
+        <!-- fold tail -->
+        <path d="M100 134 L100 152" stroke="#0A0A0A" stroke-width="8" stroke-linecap="round"/>
+      </g>
+    </svg>
+  </div>
+  <h1>Fly<span>DEX</span> 视觉识别系统</h1>
+  <div class="cn">飞蝶</div>
+  <div class="sub">Visual Identity System · V1.0 · 2026.08 · 基于「白绿拉丝」视觉基因</div>
+  <div class="tag">一蝶振翅 · 万蝶成海</div>
+</div>
+
+<div class="wrap">
+
+<!-- ============ 1 LOGO ============ -->
+<div class="sec">
+  <span class="sec-num">1</span><h2>标识 · 深度之蝶 The Depth Butterfly</h2>
+  <p class="lead">Logo 的创意来自交易所最核心的图形——订单簿深度图。买盘与卖盘的深度阶梯左右对称展开，天然构成一对蝶翼：<b>左翼为买盘（蝶翼绿），右翼为卖盘（深林绿）</b>，蝶身是价格轴。看懂交易的人一眼看到订单簿，看不懂的人一眼看到蝴蝶——一个图形，两层阅读。四级透明度递减的翼片同时隐喻流动性深度与「万蝶成海」的汇聚。</p>
+  <div class="grid g3">
+    <div>
+      <div class="logo-stage brush" style="border:1px solid var(--line)">
+        <svg viewBox="0 0 200 170" width="120"><rect x="8" y="30" width="76" height="20" rx="10" fill="#00D632"/><rect x="24" y="56" width="60" height="20" rx="10" fill="#00D632" opacity=".82"/><rect x="38" y="82" width="46" height="20" rx="10" fill="#00D632" opacity=".62"/><rect x="52" y="108" width="32" height="20" rx="10" fill="#00D632" opacity=".42"/><rect x="116" y="30" width="76" height="20" rx="10" fill="#06351A"/><rect x="116" y="56" width="60" height="20" rx="10" fill="#06351A" opacity=".82"/><rect x="116" y="82" width="46" height="20" rx="10" fill="#06351A" opacity=".62"/><rect x="116" y="108" width="32" height="20" rx="10" fill="#06351A" opacity=".42"/><rect x="94" y="34" width="12" height="100" rx="6" fill="#0A0A0A"/><circle cx="100" cy="24" r="9" fill="#0A0A0A"/><path d="M93 17 Q84 6 76 4 M107 17 Q116 6 124 4" stroke="#0A0A0A" stroke-width="5" fill="none" stroke-linecap="round"/><path d="M100 134 L100 152" stroke="#0A0A0A" stroke-width="8" stroke-linecap="round"/></svg>
+      </div><div class="cap">标准彩色版 · 白底/浅色底</div>
+    </div>
+    <div>
+      <div class="logo-stage dark">
+        <svg viewBox="0 0 200 170" width="120"><rect x="8" y="30" width="76" height="20" rx="10" fill="#00D632"/><rect x="24" y="56" width="60" height="20" rx="10" fill="#00D632" opacity=".82"/><rect x="38" y="82" width="46" height="20" rx="10" fill="#00D632" opacity=".62"/><rect x="52" y="108" width="32" height="20" rx="10" fill="#00D632" opacity=".42"/><rect x="116" y="30" width="76" height="20" rx="10" fill="#fff"/><rect x="116" y="56" width="60" height="20" rx="10" fill="#fff" opacity=".82"/><rect x="116" y="82" width="46" height="20" rx="10" fill="#fff" opacity=".62"/><rect x="116" y="108" width="32" height="20" rx="10" fill="#fff" opacity=".42"/><rect x="94" y="34" width="12" height="100" rx="6" fill="#00D632"/><circle cx="100" cy="24" r="9" fill="#00D632"/><path d="M93 17 Q84 6 76 4 M107 17 Q116 6 124 4" stroke="#00D632" stroke-width="5" fill="none" stroke-linecap="round"/><path d="M100 134 L100 152" stroke="#00D632" stroke-width="8" stroke-linecap="round"/></svg>
+      </div><div class="cap">深色版 · 交易界面/夜间模式</div>
+    </div>
+    <div>
+      <div class="logo-stage green">
+        <svg viewBox="0 0 200 170" width="120"><rect x="8" y="30" width="76" height="20" rx="10" fill="#003a0e"/><rect x="24" y="56" width="60" height="20" rx="10" fill="#003a0e" opacity=".82"/><rect x="38" y="82" width="46" height="20" rx="10" fill="#003a0e" opacity=".62"/><rect x="52" y="108" width="32" height="20" rx="10" fill="#003a0e" opacity=".42"/><rect x="116" y="30" width="76" height="20" rx="10" fill="#003a0e"/><rect x="116" y="56" width="60" height="20" rx="10" fill="#003a0e" opacity=".82"/><rect x="116" y="82" width="46" height="20" rx="10" fill="#003a0e" opacity=".62"/><rect x="116" y="108" width="32" height="20" rx="10" fill="#003a0e" opacity=".42"/><rect x="94" y="34" width="12" height="100" rx="6" fill="#003a0e"/><circle cx="100" cy="24" r="9" fill="#003a0e"/><path d="M93 17 Q84 6 76 4 M107 17 Q116 6 124 4" stroke="#003a0e" stroke-width="5" fill="none" stroke-linecap="round"/><path d="M100 134 L100 152" stroke="#003a0e" stroke-width="8" stroke-linecap="round"/></svg>
+      </div><div class="cap">单色版 · 品牌绿底/印刷单色</div>
+    </div>
+  </div>
+
+  <div class="grid g2" style="margin-top:16px">
+    <div>
+      <div class="logo-stage brush" style="border:1px solid var(--line)">
+        <div style="display:flex;align-items:center;gap:22px;justify-content:center">
+          <svg viewBox="0 0 200 170" width="86" style="flex:none;display:block"><rect x="8" y="30" width="76" height="20" rx="10" fill="#00D632"/><rect x="24" y="56" width="60" height="20" rx="10" fill="#00D632" opacity=".82"/><rect x="38" y="82" width="46" height="20" rx="10" fill="#00D632" opacity=".62"/><rect x="52" y="108" width="32" height="20" rx="10" fill="#00D632" opacity=".42"/><rect x="116" y="30" width="76" height="20" rx="10" fill="#06351A"/><rect x="116" y="56" width="60" height="20" rx="10" fill="#06351A" opacity=".82"/><rect x="116" y="82" width="46" height="20" rx="10" fill="#06351A" opacity=".62"/><rect x="116" y="108" width="32" height="20" rx="10" fill="#06351A" opacity=".42"/><rect x="94" y="34" width="12" height="100" rx="6" fill="#0A0A0A"/><circle cx="100" cy="24" r="9" fill="#0A0A0A"/><path d="M93 17 Q84 6 76 4 M107 17 Q116 6 124 4" stroke="#0A0A0A" stroke-width="5" fill="none" stroke-linecap="round"/><path d="M100 134 L100 152" stroke="#0A0A0A" stroke-width="8" stroke-linecap="round"/></svg>
+          <div style="text-align:left">
+            <div style="font-size:56px;font-weight:800;letter-spacing:-.02em;line-height:1">E<span style="color:var(--green)">DEX</span></div>
+            <div style="font-size:16px;font-weight:800;letter-spacing:.42em;margin-top:8px;color:#333">飞蝶 · 交易所</div>
+          </div>
+        </div>
+      </div><div class="cap">横版组合 · 官网页眉/文档抬头</div>
+    </div>
+    <div>
+      <div class="logo-stage brush" style="border:1px solid var(--line)">
+        <div style="width:104px;height:104px;border-radius:26px;background:var(--green);display:grid;place-items:center;box-shadow:0 10px 26px rgba(0,182,44,.35)">
+          <svg viewBox="0 0 200 170" width="66"><rect x="8" y="30" width="76" height="20" rx="10" fill="#003a0e"/><rect x="24" y="56" width="60" height="20" rx="10" fill="#003a0e" opacity=".82"/><rect x="38" y="82" width="46" height="20" rx="10" fill="#003a0e" opacity=".62"/><rect x="52" y="108" width="32" height="20" rx="10" fill="#003a0e" opacity=".42"/><rect x="116" y="30" width="76" height="20" rx="10" fill="#fff"/><rect x="116" y="56" width="60" height="20" rx="10" fill="#fff" opacity=".82"/><rect x="116" y="82" width="46" height="20" rx="10" fill="#fff" opacity=".62"/><rect x="116" y="108" width="32" height="20" rx="10" fill="#fff" opacity=".42"/><rect x="94" y="34" width="12" height="100" rx="6" fill="#0A0A0A"/><circle cx="100" cy="24" r="9" fill="#0A0A0A"/><path d="M93 17 Q84 6 76 4 M107 17 Q116 6 124 4" stroke="#0A0A0A" stroke-width="5" fill="none" stroke-linecap="round"/><path d="M100 134 L100 152" stroke="#0A0A0A" stroke-width="8" stroke-linecap="round"/></svg>
+        </div>
+      </div><div class="cap">App 图标 · 26px 圆角 / 绿底双色翼</div>
+    </div>
+  </div>
+  <table>
+    <tr><th style="width:30%">规范项</th><th>规则</th></tr>
+    <tr><td>最小使用尺寸</td><td>单独图形 ≥ 20px；组合标 ≥ 96px 宽。小于 20px 时使用「蝶身+双翼首片」简化版</td></tr>
+    <tr><td>安全空间</td><td>四周留白 ≥ 蝶身宽度的 2 倍（约图形高度的 1/6）</td></tr>
+    <tr><td>翼片透明度</td><td>自上而下 100% / 82% / 62% / 42%，四级递减不可增删</td></tr>
+    <tr><td>字标配色</td><td>「E」墨黑 #0A0A0A，「DEX」蝶翼绿 #00D632——强调去中心化交易所属性；深色底上「E」改为白色，「DEX」保持绿色</td></tr>
+  </table>
+</div>
+
+<!-- ============ 2 色彩 ============ -->
+<div class="sec">
+  <span class="sec-num">2</span><h2>色彩系统 · 白绿拉丝</h2>
+  <p class="lead">主视觉延续「白绿拉丝」基因：大面积留白 + 高饱和蝶翼绿点睛 + 细密拉丝纹理提供质感。行情语义色默认绿涨红跌（App 内支持一键切换红涨绿跌，服务华语用户习惯）。</p>
+  <div class="grid g4">
+    <div class="sw"><div class="chip" style="background:#00D632"></div><div class="info"><div class="nm">蝶翼绿 Wing Green ★主色</div><div class="hex">#00D632</div></div></div>
+    <div class="sw"><div class="chip" style="background:#06351A"></div><div class="info"><div class="nm">深林绿 Forest</div><div class="hex">#06351A</div></div></div>
+    <div class="sw"><div class="chip" style="background:#B7F2C0"></div><div class="info"><div class="nm">浅羽绿 Feather</div><div class="hex">#B7F2C0</div></div></div>
+    <div class="sw"><div class="chip" style="background:#E9F7EC"></div><div class="info"><div class="nm">薄雾绿 Mist</div><div class="hex">#E9F7EC</div></div></div>
+    <div class="sw"><div class="chip" style="background:#0A0A0A"></div><div class="info"><div class="nm">墨黑 Ink</div><div class="hex">#0A0A0A</div></div></div>
+    <div class="sw"><div class="chip" style="background:#F5F6F5;border-bottom:1px solid var(--line)"></div><div class="info"><div class="nm">云灰 Cloud（卡片底）</div><div class="hex">#F5F6F5</div></div></div>
+    <div class="sw"><div class="chip" style="background:#F6465D"></div><div class="info"><div class="nm">警示红 Alert（跌/卖）</div><div class="hex">#F6465D</div></div></div>
+    <div class="sw"><div class="chip" style="background:linear-gradient(180deg,#141414,#000)"></div><div class="info"><div class="nm">夜盘黑 Pro 模式底</div><div class="hex">#000000 / 卡片 #141414</div></div></div>
+  </div>
+  <div class="ratio">
+    <div style="flex:6;background:#fff;color:#999;border-right:1px solid var(--line)">白底 60%</div>
+    <div style="flex:2;background:#F5F6F5;color:#888">灰卡 20%</div>
+    <div style="flex:1.2;background:#0A0A0A;color:#888">墨黑 12%</div>
+    <div style="flex:.8;background:#00D632;color:#003a0e">绿 8%</div>
+  </div>
+  <p class="cap" style="text-align:left">配比原则：绿是「点睛」不是「铺底」——大面积绿仅用于成功页、金额面板与 App 图标；日常界面以白灰为主，绿色出现即代表「可点、收益、上涨、完成」。</p>
+</div>
+
+<!-- ============ 3 字体 ============ -->
+<div class="sec">
+  <span class="sec-num">3</span><h2>字体与数字规范</h2>
+  <div class="grid g2">
+    <div class="type-demo">
+      <div class="t1">一个账户 交易全球</div>
+      <div class="t2">中文标题 · 苹方 / 微软雅黑 · 800 重量 · 字距 -0.03em</div>
+      <div class="t3">正文 · 苹方 / 微软雅黑 Regular · 14px · 行高 1.6 · 颜色 #555。西文与数字标题使用 Helvetica Neue / Inter，同样收紧字距，形成 demo 中标志性的「大字紧排」气质。</div>
+    </div>
+    <div class="type-demo">
+      <div class="t2" style="margin-top:0">行情数字 · 等宽字体（Tabular）</div>
+      <div class="num">BTC/USDC <b>98,432.50</b> <b>↑ +2.41%</b></div>
+      <div class="num">EDEX/USDT <i>0.1984</i> <i>↓ −0.80%</i></div>
+      <div class="t3" style="margin-top:14px">所有价格、数量、盈亏必须使用等宽数字（SF Mono / Roboto Mono / ui-monospace），保证列表纵向对齐与跳动稳定。涨绿 #00D632 / 跌红 #F6465D，箭头 ↑↓ 与百分比同色。</div>
+    </div>
+  </div>
+</div>
+
+<!-- ============ 4 吉祥物 ============ -->
+<div class="sec">
+  <span class="sec-num">4</span><h2>吉祥物 · 蝶宝 EDDY</h2>
+  <p class="lead">EDDY（蝶宝）= EDEX 的 AI Agent 具象化。设定：一只圆头圆脑的机械蝶，翅膀即深度图（与 Logo 同构），触角是天线——它 7×24 替你盯盘做市。EDDY 出现的地方就代表「你的 Agent 正在工作」：做市中、涨跌播报、成就庆祝、风险提醒，都由 EDDY 出面，让冷冰冰的交易所有一个可以喜欢的角色。</p>
+  <div class="mascot-stage brush" style="border:1px solid var(--line)">
+    <svg viewBox="0 0 240 200" width="240">
+      <!-- wings -->
+      <g>
+        <rect x="18" y="52" width="70" height="18" rx="9" fill="#00D632"/>
+        <rect x="32" y="76" width="56" height="18" rx="9" fill="#00D632" opacity=".8"/>
+        <rect x="46" y="100" width="42" height="18" rx="9" fill="#00D632" opacity=".55"/>
+        <rect x="152" y="52" width="70" height="18" rx="9" fill="#06351A"/>
+        <rect x="152" y="76" width="56" height="18" rx="9" fill="#06351A" opacity=".8"/>
+        <rect x="152" y="100" width="42" height="18" rx="9" fill="#06351A" opacity=".55"/>
+      </g>
+      <!-- body -->
+      <rect x="96" y="44" width="48" height="112" rx="24" fill="#0A0A0A"/>
+      <!-- face -->
+      <circle cx="112" cy="86" r="7" fill="#00D632"/>
+      <circle cx="132" cy="86" r="7" fill="#00D632"/>
+      <path d="M110 112 Q120 122 134 112" stroke="#00D632" stroke-width="5" fill="none" stroke-linecap="round"/>
+      <!-- antenna -->
+      <path d="M108 44 Q100 24 88 20 M132 44 Q140 24 152 20" stroke="#0A0A0A" stroke-width="6" fill="none" stroke-linecap="round"/>
+      <circle cx="86" cy="19" r="6" fill="#00D632"/><circle cx="154" cy="19" r="6" fill="#00D632"/>
+      <!-- belly badge -->
+      <rect x="108" y="130" width="24" height="14" rx="7" fill="#00D632"/>
+    </svg>
+  </div>
+  <div class="mascot-row">
+    <div class="card" style="text-align:center"><div style="font-size:30px">🟢</div><h4>做市中</h4><p>双翼匀速轻扇 · 眼睛为「—」专注线，用于 Agent 视图工作状态</p></div>
+    <div class="card" style="text-align:center"><div style="font-size:30px">📈</div><h4>上涨播报</h4><p>左翼（绿）展开变大 · 眼睛为「↑」，用于行情推送与涨幅海报</p></div>
+    <div class="card" style="text-align:center"><div style="font-size:30px">🎉</div><h4>释放到账</h4><p>头顶撒出绿色翼片粒子，用于每日额度释放与成就页</p></div>
+    <div class="card" style="text-align:center"><div style="font-size:30px">🛡️</div><h4>风险提醒</h4><p>双翼收拢呈盾形 · 眼睛为「!」，用于风控提示与安全教育</p></div>
+  </div>
+  <p class="cap" style="text-align:left">命名：中文「蝶宝」，英文「EDDY」（取自 EDEX，发音亲切）。使用纪律：EDDY 只出现在运营/社区/教育场景与 Agent 视图；专业交易界面（Pro 盘口、K 线）不出现吉祥物，保持专业感。</p>
+
+  <h3 style="margin-top:34px;font-size:18px;font-weight:900">4.1 母舰彩蛋 · 「飞碟起飞，万蝶出舱」</h3>
+  <p class="lead">「飞蝶」读音即「飞碟」——这个梗要用足。设定一艘 EDEX 母舰飞碟：舱门打开，成群的蝴蝶机器人（EDDY 蝶群）从飞碟里飞出，散向市场开始做市。用于开屏动画分镜、表情包、活动 KV 与社区梗图；一句话文案固定为「飞碟起飞 · 万蝶出舱」。</p>
+  <div class="mascot-stage" style="background:linear-gradient(180deg,#07130B,#0B1F10);border:1px solid var(--line);padding:18px 0">
+    <svg viewBox="0 0 720 430" width="700">
+      <defs>
+        <g id="bfly">
+          <rect x="-30" y="-8" width="22" height="8" rx="4" fill="#00D632"/>
+          <rect x="-26" y="3" width="18" height="8" rx="4" fill="#00D632" opacity=".7"/>
+          <rect x="8" y="-8" width="22" height="8" rx="4" fill="#7CFA9B"/>
+          <rect x="8" y="3" width="18" height="8" rx="4" fill="#7CFA9B" opacity=".7"/>
+          <rect x="-8" y="-14" width="16" height="34" rx="8" fill="#0A0F0B" stroke="#00D632" stroke-width="1.5"/>
+          <circle cx="-2.5" cy="-2" r="2.4" fill="#00E63A"/><circle cx="2.8" cy="-2" r="2.4" fill="#00E63A"/>
+        </g>
+        <radialGradient id="beamg" cx="50%" cy="0%" r="90%">
+          <stop offset="0%" stop-color="#00E63A" stop-opacity=".45"/>
+          <stop offset="100%" stop-color="#00E63A" stop-opacity="0"/>
+        </radialGradient>
+      </defs>
+      <!-- stars -->
+      <g fill="#7CFA9B" opacity=".5">
+        <circle cx="60" cy="50" r="2"/><circle cx="140" cy="26" r="1.5"/><circle cx="640" cy="40" r="2"/><circle cx="690" cy="90" r="1.5"/><circle cx="40" cy="140" r="1.5"/><circle cx="600" cy="140" r="1.6"/><circle cx="340" cy="22" r="1.6"/>
+      </g>
+      <!-- beam -->
+      <path d="M300 150 L200 400 L520 400 L420 150 Z" fill="url(#beamg)"/>
+      <!-- UFO mothership -->
+      <g transform="translate(360,110)">
+        <ellipse cx="0" cy="30" rx="150" ry="16" fill="#000" opacity=".35"/>
+        <path d="M-95 -18 Q0 -74 95 -18 Z" fill="#06351A"/>
+        <ellipse cx="0" cy="-30" rx="52" ry="30" fill="#0F3D22"/>
+        <ellipse cx="0" cy="-34" rx="44" ry="24" fill="#00E63A" opacity=".25"/>
+        <ellipse cx="0" cy="-2" rx="150" ry="34" fill="#0A0F0B" stroke="#00D632" stroke-width="3"/>
+        <ellipse cx="0" cy="6" rx="112" ry="20" fill="#06351A"/>
+        <!-- port lights -->
+        <g fill="#00E63A">
+          <circle cx="-120" cy="0" r="6"/><circle cx="-72" cy="12" r="6"/><circle cx="-24" cy="17" r="6"/><circle cx="24" cy="17" r="6"/><circle cx="72" cy="12" r="6"/><circle cx="120" cy="0" r="6"/>
+        </g>
+        <!-- hatch -->
+        <rect x="-34" y="14" width="68" height="12" rx="6" fill="#00E63A" opacity=".85"/>
+        <!-- logo on dome -->
+        <g transform="translate(0,-34) scale(.32)">
+          <rect x="-58" y="-14" width="44" height="12" rx="6" fill="#00E63A"/><rect x="-50" y="2" width="36" height="12" rx="6" fill="#00E63A" opacity=".7"/>
+          <rect x="14" y="-14" width="44" height="12" rx="6" fill="#fff"/><rect x="14" y="2" width="36" height="12" rx="6" fill="#fff" opacity=".7"/>
+          <rect x="-8" y="-22" width="16" height="46" rx="8" fill="#00D632"/>
+        </g>
+      </g>
+      <!-- butterfly swarm descending -->
+      <g>
+        <use href="#bfly" transform="translate(360,190) scale(1.1)"/>
+        <use href="#bfly" transform="translate(310,240) scale(.95) rotate(-14)"/>
+        <use href="#bfly" transform="translate(412,250) scale(.95) rotate(12)"/>
+        <use href="#bfly" transform="translate(268,308) scale(.85) rotate(-22)"/>
+        <use href="#bfly" transform="translate(362,318) scale(.9)"/>
+        <use href="#bfly" transform="translate(452,312) scale(.85) rotate(20)"/>
+        <use href="#bfly" transform="translate(226,368) scale(.75) rotate(-30)"/>
+        <use href="#bfly" transform="translate(310,382) scale(.8) rotate(-8)"/>
+        <use href="#bfly" transform="translate(408,380) scale(.8) rotate(10)"/>
+        <use href="#bfly" transform="translate(488,370) scale(.75) rotate(28)"/>
+        <!-- escapees flying wide -->
+        <use href="#bfly" transform="translate(120,240) scale(.7) rotate(-40)"/>
+        <use href="#bfly" transform="translate(608,232) scale(.7) rotate(38)"/>
+        <use href="#bfly" transform="translate(72,330) scale(.6) rotate(-24)"/>
+        <use href="#bfly" transform="translate(652,330) scale(.6) rotate(24)"/>
+      </g>
+      <!-- motion trails -->
+      <g stroke="#00D632" stroke-width="2.5" stroke-linecap="round" opacity=".4" fill="none">
+        <path d="M150 226 q-20 10 -36 8"/><path d="M580 220 q20 10 36 8"/>
+        <path d="M100 318 q-16 8 -30 6"/><path d="M624 318 q16 8 30 6"/>
+      </g>
+      <text x="360" y="422" text-anchor="middle" font-size="17" font-weight="900" fill="#7CFA9B" letter-spacing="6">飞碟起飞 · 万蝶出舱</text>
+    </svg>
+  </div>
+  <div class="mascot-row">
+    <div class="card" style="text-align:center"><div style="font-size:30px">🛸</div><h4>开屏动画</h4><p>飞碟入场 → 舱门开启 → 蝶群飞出散开成盘口深度图，最后定格为 Logo</p></div>
+    <div class="card" style="text-align:center"><div style="font-size:30px">😂</div><h4>表情包</h4><p>「上车」= 蝶宝排队进飞碟；「起飞」= 飞碟拉升；「到账」= 飞碟空投绿色翼片</p></div>
+    <div class="card" style="text-align:center"><div style="font-size:30px">🎪</div><h4>活动 KV</h4><p>大促/开池主视觉：母舰悬停 + 蝶群出舱，标题区留在下方 1/3</p></div>
+  </div>
+
+</div>
+
+<!-- ============ 5 ICON ============ -->
+<div class="sec">
+  <span class="sec-num">5</span><h2>交易所功能 ICON 集</h2>
+  <p class="lead">统一网格 24×24 · 圆角线性风格 · 描边 2px · 端点圆头 · 默认墨黑，激活态蝶翼绿。覆盖交易所全部一级功能，源文件均为 SVG 可直接交付开发。</p>
+  <div class="icon-grid">
+    <div class="icon-cell"><svg viewBox="0 0 24 24" fill="none" stroke="#0A0A0A" stroke-width="2" stroke-linecap="round"><path d="M4 18 L9 11 L13 14 L20 5"/><path d="M15 5 h5 v5"/></svg><div class="nm">行情</div></div>
+    <div class="icon-cell"><svg viewBox="0 0 24 24" fill="none" stroke="#0A0A0A" stroke-width="2" stroke-linecap="round"><path d="M7 4 v16 M7 7 h-3 M7 17 h3"/><path d="M17 4 v16 M17 7 h3 M17 17 h-3"/></svg><div class="nm">交易</div></div>
+    <div class="icon-cell"><svg viewBox="0 0 24 24" fill="none" stroke="#0A0A0A" stroke-width="2" stroke-linecap="round"><rect x="9" y="7" width="6" height="8" rx="1"/><path d="M12 3 v4 M12 15 v6"/><path d="M4 19 L7 15 M20 5 L17 9"/></svg><div class="nm">合约</div></div>
+    <div class="icon-cell"><svg viewBox="0 0 24 24" fill="none" stroke="#0A0A0A" stroke-width="2" stroke-linecap="round"><rect x="3" y="6" width="18" height="13" rx="3"/><path d="M15 12.5 h3"/><path d="M3 10 h18"/></svg><div class="nm">资产</div></div>
+    <div class="icon-cell"><svg viewBox="0 0 24 24" fill="none" stroke="#0A0A0A" stroke-width="2" stroke-linecap="round"><path d="M12 3 C8 7 5 9 5 13 a7 7 0 0 0 14 0 c0-4-3-6-7-10z"/><path d="M9 14 a3 3 0 0 0 6 0"/></svg><div class="nm">流动性</div></div>
+    <div class="icon-cell"><svg viewBox="0 0 24 24" fill="none" stroke="#0A0A0A" stroke-width="2" stroke-linecap="round"><rect x="7" y="8" width="10" height="9" rx="4.5"/><circle cx="10.5" cy="12" r=".8" fill="#0A0A0A"/><circle cx="13.5" cy="12" r=".8" fill="#0A0A0A"/><path d="M9 8 Q7 5 5.5 4.5 M15 8 Q17 5 18.5 4.5"/></svg><div class="nm">AI Agent</div></div>
+    <div class="icon-cell"><svg viewBox="0 0 24 24" fill="none" stroke="#0A0A0A" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="8" r="3.2"/><path d="M5 20 a7 7 0 0 1 14 0"/><path d="M17.5 5.5 a3.2 3.2 0 0 1 0 5 M20.5 20 a7 7 0 0 0-3.4-6"/></svg><div class="nm">团队</div></div>
+    <div class="icon-cell"><svg viewBox="0 0 24 24" fill="none" stroke="#0A0A0A" stroke-width="2" stroke-linecap="round"><path d="M12 20 V8"/><path d="M7 13 l5 -5 5 5"/><rect x="4" y="3" width="16" height="2.5" rx="1.2"/></svg><div class="nm">充值</div></div>
+    <div class="icon-cell"><svg viewBox="0 0 24 24" fill="none" stroke="#0A0A0A" stroke-width="2" stroke-linecap="round"><path d="M12 4 V16"/><path d="M7 11 l5 5 5 -5"/><rect x="4" y="18.5" width="16" height="2.5" rx="1.2"/></svg><div class="nm">提现</div></div>
+    <div class="icon-cell"><svg viewBox="0 0 24 24" fill="none" stroke="#0A0A0A" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="8"/><path d="M12 8 v4 l3 2"/></svg><div class="nm">释放进度</div></div>
+    <div class="icon-cell"><svg viewBox="0 0 24 24" fill="none" stroke="#0A0A0A" stroke-width="2" stroke-linecap="round"><path d="M12 3 L20 6 v6 c0 4.5-3.5 7.5-8 9 c-4.5-1.5-8-4.5-8-9 V6 z"/><path d="M8.8 12 l2.4 2.4 4-4.8"/></svg><div class="nm">安全</div></div>
+    <div class="icon-cell"><svg viewBox="0 0 24 24" fill="none" stroke="#0A0A0A" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="3"/><path d="M12 2 v3 M12 19 v3 M2 12 h3 M19 12 h3 M4.9 4.9 l2.1 2.1 M17 17 l2.1 2.1 M19.1 4.9 L17 7 M7 17 l-2.1 2.1"/></svg><div class="nm">治理 DAO</div></div>
+    <div class="icon-cell"><svg viewBox="0 0 24 24" fill="none" stroke="#0A0A0A" stroke-width="2" stroke-linecap="round"><path d="M4 7 h13 M4 12 h16 M4 17 h10"/><circle cx="19.5" cy="7" r="1.4" fill="#0A0A0A"/></svg><div class="nm">订单簿</div></div>
+    <div class="icon-cell"><svg viewBox="0 0 24 24" fill="none" stroke="#0A0A0A" stroke-width="2" stroke-linecap="round"><path d="M4 15 C6 15 6 9 9 9 s3 8 6 8 3-8 5-8"/><path d="M4 20 h16"/></svg><div class="nm">SWAP 底池</div></div>
+    <div class="icon-cell"><svg viewBox="0 0 24 24" fill="none" stroke="#0A0A0A" stroke-width="2" stroke-linecap="round"><circle cx="9" cy="9" r="5.2"/><path d="M15.5 6 a5.2 5.2 0 1 1-6.4 8"/></svg><div class="nm">币对</div></div>
+    <div class="icon-cell"><svg viewBox="0 0 24 24" fill="none" stroke="#0A0A0A" stroke-width="2" stroke-linecap="round"><path d="M8 12 a4 4 0 1 1 8 0 a4 4 0 1 1 -8 0"/><path d="M12 2 v3 M12 19 v3 M3.5 7 l2.6 1.5 M17.9 15.5 l2.6 1.5 M3.5 17 l2.6 -1.5 M17.9 8.5 l2.6 -1.5"/></svg><div class="nm">铸造</div></div>
+    <div class="icon-cell"><svg viewBox="0 0 24 24" fill="none" stroke="#0A0A0A" stroke-width="2" stroke-linecap="round"><path d="M5 6 h14 l-2.5 12 h-9 z"/><path d="M9 6 a3 3 0 0 1 6 0"/><path d="M10.5 12.5 l1.8 1.8 3-3.6"/></svg><div class="nm">认购</div></div>
+    <div class="icon-cell"><svg viewBox="0 0 24 24" fill="none" stroke="#0A0A0A" stroke-width="2" stroke-linecap="round"><path d="M14 4 l6 6 -9.5 9.5 a2.2 2.2 0 0 1-3 0 l-3-3 a2.2 2.2 0 0 1 0-3 z"/><path d="M12.5 8.5 l3 3"/></svg><div class="nm">销毁</div></div>
+  </div>
+</div>
+
+<!-- ============ 6 组件 ============ -->
+<div class="sec">
+  <span class="sec-num">6</span><h2>核心组件与徽章</h2>
+  <p class="lead">按钮沿用 demo 的胶囊语言：黑=主要操作，绿=确认/成交，浅绿=次要入口。团队等级徽章为推广体系配套物料，N 级用绿系渐进，S 级用墨金以示尊贵。</p>
+  <div class="card">
+    <h4>按钮</h4>
+    <div class="badge-row">
+      <span class="pill pill-blk">充值</span>
+      <span class="pill pill-grn">确认认购</span>
+      <span class="pill pill-lg">查看我的 Agent</span>
+      <span class="pill pill-line">取消</span>
+    </div>
+    <h4 style="margin-top:22px">团队等级徽章</h4>
+    <div class="badge-row">
+      <span class="lvl" style="background:#F2F3F2;color:#777">普通</span>
+      <span class="lvl" style="background:#E9F7EC;color:#00A028">N0–N2 团队长</span>
+      <span class="lvl" style="background:#B7F2C0;color:#06351A">N3–N4 合伙人</span>
+      <span class="lvl" style="background:#00D632;color:#003a0e">N5–N6 全球合伙人</span>
+      <span class="lvl" style="background:#0A0A0A;color:#F4C84A;border-color:#F4C84A">S1 ★</span>
+      <span class="lvl" style="background:#0A0A0A;color:#F4C84A;border-color:#F4C84A">S2 ★★</span>
+      <span class="lvl" style="background:#0A0A0A;color:#F4C84A;border-color:#F4C84A">S3 ★★★</span>
+    </div>
+    <h4 style="margin-top:22px">代币图标</h4>
+    <div class="badge-row" style="align-items:center">
+      <span style="width:44px;height:44px;border-radius:50%;background:#00D632;display:inline-grid;place-items:center;font-weight:800;color:#003a0e;font-size:9px">FlyDEX</span>
+      <span style="width:44px;height:44px;border-radius:50%;background:#0A0A0A;display:inline-grid;place-items:center;font-weight:800;color:#00D632;font-size:9px">FlyDEX</span>
+      <span style="font-size:13px;color:#666">圆形币标两版：绿底墨字（浅色界面）/ 墨底绿字（深色界面）；上所与钱包收录统一使用绿底版</span>
+    </div>
+  </div>
+</div>
+
+<!-- ============ 7 误用 ============ -->
+<div class="sec">
+  <span class="sec-num">7</span><h2>标识误用示例</h2>
+  <div class="donts">
+    <div class="dont"><div class="x">✕ 禁止</div>改变双翼配色（如左深右绿对调）</div>
+    <div class="dont"><div class="x">✕ 禁止</div>拉伸、旋转、投影、描边加粗</div>
+    <div class="dont"><div class="x">✕ 禁止</div>在花哨照片/渐变上直接放彩色版</div>
+    <div class="dont"><div class="x">✕ 禁止</div>翼片数量增减或透明度改动</div>
+  </div>
+</div>
+
+<!-- ============ 8 待制作物料清单 ============ -->
+<div class="sec">
+  <span class="sec-num">8</span><h2>宣发物料制作清单（建议）</h2>
+  <p class="lead">在本 VI 基础上，建议按以下优先级排产宣发物料——P0 为 TGE 前必备。</p>
+  <table>
+    <tr><th style="width:12%">优先级</th><th style="width:34%">物料</th><th>说明</th></tr>
+    <tr><td><b>P0</b></td><td>社媒资产包</td><td>X/Telegram/Discord 头像（App 图标版）、横幅封面（深度之蝶+口号）、置顶贴图</td></tr>
+    <tr><td><b>P0</b></td><td>一图读懂 FlyDEX 飞蝶</td><td>对标 HOM 一图读懂 v5：档位表、释放与加速、返佣与团队等级、承接覆盖率，一张长图讲完</td></tr>
+    <tr><td><b>P0</b></td><td>邀请裂变海报模板</td><td>带专属二维码位 + 邀请码，档位卖点三版（300U 入门版 / 5,000U 进阶版 / 50,000U 旗舰版）</td></tr>
+    <tr><td><b>P0</b></td><td>Agent 视图 UI 皮肤</td><td>EDDY 形象植入做市机器人页面：工作态动画、释放到账庆祝态</td></tr>
+    <tr><td><b>P1</b></td><td>官网首页（Landing）</td><td>白绿拉丝风：首屏深度之蝶动效 + 三大卖点 + 实时承接覆盖率仪表盘（透明度即营销）</td></tr>
+    <tr><td><b>P1</b></td><td>发布会/路演 PPT 模板</td><td>与白皮书 V2.1 同版式，含数据页、对比页、路线图页母版</td></tr>
+    <tr><td><b>P1</b></td><td>EDDY 表情包</td><td>Telegram/WeChat 贴纸 12-16 枚：涨、跌、梭哈、佛系、释放到账、拉盘、社区日常用语</td></tr>
+    <tr><td><b>P1</b></td><td>做市商 BD 材料</td><td>英文 one-pager：Maker -0.03% 负费率全场最激进 + 结算分离安全模型</td></tr>
+    <tr><td><b>P2</b></td><td>15-30 秒品牌动画</td><td>订单簿深度图长出翅膀→蝴蝶振翼→亿万联动粒子扩散→Logo 定版</td></tr>
+    <tr><td><b>P2</b></td><td>团队等级实体徽章/周边</td><td>N/S 级金属徽章、T 恤、帽子——线下社区活动与 S 级授勋仪式用</td></tr>
+    <tr><td><b>P2</b></td><td>月度透明度报告模板</td><td>承接覆盖率四项构成的固定图表版式，每月发布形成品牌资产</td></tr>
+  </table>
+</div>
+
+<div class="foot">FlyDEX 飞蝶 · 视觉识别系统 V1.0 · 2026.08 · EDEX Foundation<br>一蝶振翅 · 万蝶成海 — 本文件所有图形均为 SVG 矢量，可直接提取交付设计与开发</div>
+</div>
+</body>
+</html>

@@ -1,0 +1,15 @@
+[Unit]
+Description=Tyche mock trading service
+After=network-online.target redis-server.service mock-dydx-sidecar.service
+Wants=network-online.target mock-dydx-sidecar.service
+
+[Service]
+Type=simple
+WorkingDirectory=/home/ec2-user/flydex/dydx/tyche
+Environment=PATH=/usr/local/go/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+ExecStart=/usr/local/go/bin/go run ./cmd/tyche
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

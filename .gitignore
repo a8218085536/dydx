@@ -1,0 +1,68 @@
+# Runtime and secret configuration
+.env
+.env.*
+!.env.example
+**/*.env
+!**/*.env.example
+server-connection.local.env
+助记词.txt
+**/*.pem
+**/*.key
+**/authorized_keys
+**/tyche.toml
+**/tyche.toml.*
+**/tyche.dydx.single-node.toml
+**/tyche copy.toml
+**/sniffer.toml
+!**/tyche.dydx.example.toml
+!**/tyche.mock.toml
+
+# Local binaries and certificates
+/ssh
+/tyche-linux-amd64
+**/*.crt
+tyche/cmd/tyche/tyche
+tyche/cmd/tyche/tyche9000
+tyche/cmd/tyche/nocp_tyche/tyche
+tyche/cmd/sniffer/NOCPsniffer
+tyche/cmd/sniffer/__debug_bin.exe*
+
+# Local logs and scratch text
+log.txt
+新建文本文档.txt
+
+# Dependencies and generated output
+.venv/
+**/node_modules/
+**/dist/
+**/build/
+**/__pycache__/
+*.pyc
+*.log
+*.db
+*.sqlite
+*.sqlite3
+
+# Archives and compiled artifacts
+*.zip
+*.tar
+*.tar.gz
+*.tgz
+*.jar
+*.war
+*.class
+*.exe
+*.dll
+*.so
+*.bin
+*.remote
+
+# Local inspection and patch scratch directories
+inspect-*/
+oms-market-display-patch/
+
+# IDE and OS files
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db

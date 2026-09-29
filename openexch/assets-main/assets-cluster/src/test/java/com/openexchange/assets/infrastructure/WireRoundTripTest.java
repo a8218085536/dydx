@@ -1,0 +1,524 @@
+// SPDX-License-Identifier: Apache-2.0
+package com.openexchange.assets.infrastructure;
+
+import com.openexchange.assets.application.engine.AssetsEngine;
+import com.openexchange.assets.application.projection.SettlementProjector;
+import com.openexchange.assets.domain.Asset;
+import com.openexchange.assets.domain.FixedPoint;
+import com.openexchange.assets.infrastructure.generated.BalanceSnapshotEndDecoder;
+import com.openexchange.assets.infrastructure.generated.BalanceUpdateDecoder;
+import com.openexchange.assets.infrastructure.generated.BoolFlag;
+import com.openexchange.assets.infrastructure.generated.DepositAckDecoder;
+import com.openexchange.assets.infrastructure.generated.DepositEncoder;
+import com.openexchange.assets.infrastructure.generated.HoldAckDecoder;
+import com.openexchange.assets.infrastructure.generated.HoldEncoder;
+import com.openexchange.assets.infrastructure.generated.HoldRejectDecoder;
+import com.openexchange.assets.infrastructure.generated.HoldSnapshotEndDecoder;
+import com.openexchange.assets.infrastructure.generated.HoldSnapshotEntryDecoder;
+import com.openexchange.assets.infrastructure.generated.InitTradeHighWaterEncoder;
+import com.openexchange.assets.infrastructure.generated.MessageHeaderDecoder;
+import com.openexchange.assets.infrastructure.generated.MessageHeaderEncoder;
+import com.openexchange.assets.infrastructure.generated.RequestBalanceSnapshotEncoder;
+import com.openexchange.assets.infrastructure.generated.RequestHoldSnapshotEncoder;
+import com.openexchange.assets.infrastructure.generated.FeedPositionReportDecoder;
+import com.openexchange.assets.infrastructure.generated.QueryFeedPositionEncoder;
+import com.openexchange.assets.infrastructure.generated.SettleBatchEncoder;
+import com.openexchange.assets.infrastructure.generated.SettleEncoder;
+import com.openexchange.assets.infrastructure.generated.TerminalReleaseEncoder;
+import com.openexchange.assets.infrastructure.generated.SettlementAppliedDecoder;
+import com.openexchange.assets.infrastructure.generated.WithdrawAckDecoder;
+import com.openexchange.assets.infrastructure.generated.WithdrawEncoder;
+import com.openexchange.assets.infrastructure.generated.WithdrawRejectDecoder;
+import com.openexchange.assets.infrastructure.persistence.AssetsSbeDemuxer;
+import com.openexchange.assets.infrastructure.publisher.AssetsEventPublisher;
+import org.agrona.MutableDirectBuffer;
+import org.agrona.concurrent.UnsafeBuffer;
+import org.junit.Test;
+
+import java.util.ArrayList;
+import java.util.List;
+
+import static org.junit.Assert.assertEquals;
+
+/**
+ * End-to-end validation of the cluster seams (not just compilation): an SBE ingress message decoded by
+ * {@link AssetsSbeDemuxer} drives the real {@link AssetsEngine}, whose events are encoded by
+ * {@link AssetsEventPublisher} to SBE egress, which we decode back and assert. This proves the wire
+ * codecs and the engine agree on money — including the v2 correlationId echo, the deposit/withdraw acks,
+ * and the read-only snapshot queries.
+ */
+public class WireRoundTripTest {
+
+    /** Capturing egress: decodes each SBE message the publisher emits into a canonical line. */
+    private static final class CapturingEgress implements AssetsEventPublisher.Egress {
+        final List<String> lines = new ArrayList<>();
+        /** Channel each emitted frame was tagged with, parallel to {@link #lines}. */
+        final List<Integer> channels = new ArrayList<>();
+        /** Routing each emitted frame was tagged with, parallel to {@link #lines}. */
+        final List<AssetsEventPublisher.Routing> routings = new ArrayList<>();
+        private final MessageHeaderDecoder header = new MessageHeaderDecoder();
+        private final BalanceUpdateDecoder balance = new BalanceUpdateDecoder();
+        private final DepositAckDecoder depositAck = new DepositAckDecoder();
+        private final WithdrawAckDecoder withdrawAck = new WithdrawAckDecoder();
+        private final HoldAckDecoder holdAck = new HoldAckDecoder();
+        private final HoldRejectDecoder holdReject = new HoldRejectDecoder();
+        private final WithdrawRejectDecoder withdrawReject = new WithdrawRejectDecoder();
+        private final SettlementAppliedDecoder settled = new SettlementAppliedDecoder();
+        private final BalanceSnapshotEndDecoder balSnapEnd = new BalanceSnapshotEndDecoder();
+        private final HoldSnapshotEntryDecoder holdSnapEntry = new HoldSnapshotEntryDecoder();
+        private final HoldSnapshotEndDecoder holdSnapEnd = new HoldSnapshotEndDecoder();
+        private final FeedPositionReportDecoder feedPos = new FeedPositionReportDecoder();
+
+        @Override
+        public void emit(MutableDirectBuffer buffer, int offset, int length, int channel,
+                         AssetsEventPublisher.Routing routing) {
+            channels.add(channel);
+            routings.add(routing);
+            header.wrap(buffer, offset);
+            switch (header.templateId()) {
+                case BalanceUpdateDecoder.TEMPLATE_ID:
+                    balance.wrapAndApplyHeader(buffer, offset, header);
+                    lines.add(String.format("BALANCE u=%d asset=%d avail=%d locked=%d",
+                            balance.userId(), balance.assetId(), balance.available(), balance.locked()));
+                    break;
+                case DepositAckDecoder.TEMPLATE_ID:
+                    depositAck.wrapAndApplyHeader(buffer, offset, header);
+                    lines.add(String.format("DEPOSITACK corr=%d u=%d asset=%d amt=%d newAvail=%d",
+                            depositAck.correlationId(), depositAck.userId(), depositAck.assetId(),
+                            depositAck.amount(), depositAck.newAvailable()));
+                    break;
+                case WithdrawAckDecoder.TEMPLATE_ID:
+                    withdrawAck.wrapAndApplyHeader(buffer, offset, header);
+                    lines.add(String.format("WITHDRAWACK corr=%d u=%d asset=%d amt=%d newAvail=%d",
+                            withdrawAck.correlationId(), withdrawAck.userId(), withdrawAck.assetId(),
+                            withdrawAck.amount(), withdrawAck.newAvailable()));
+                    break;
+                case HoldAckDecoder.TEMPLATE_ID:
+                    holdAck.wrapAndApplyHeader(buffer, offset, header);
+                    lines.add(String.format("HOLDACK corr=%d order=%d u=%d asset=%d amt=%d",
+                            holdAck.correlationId(), holdAck.orderId(), holdAck.userId(),
+                            holdAck.assetId(), holdAck.amount()));
+                    break;
+                case HoldRejectDecoder.TEMPLATE_ID:
+                    holdReject.wrapAndApplyHeader(buffer, offset, header);
+                    lines.add(String.format("HOLDREJECT corr=%d order=%d u=%d asset=%d amt=%d reason=%s",
+                            holdReject.correlationId(), holdReject.orderId(), holdReject.userId(),
+                            holdReject.assetId(), holdReject.amount(), holdReject.reason().name()));
+                    break;
+                case WithdrawRejectDecoder.TEMPLATE_ID:
+                    withdrawReject.wrapAndApplyHeader(buffer, offset, header);
+                    lines.add(String.format("WITHDRAWREJECT corr=%d u=%d asset=%d amt=%d reason=%s",
+                            withdrawReject.correlationId(), withdrawReject.userId(), withdrawReject.assetId(),
+                            withdrawReject.amount(), withdrawReject.reason().name()));
+                    break;
+                case SettlementAppliedDecoder.TEMPLATE_ID:
+                    settled.wrapAndApplyHeader(buffer, offset, header);
+                    lines.add(String.format("SETTLED tradeId=%d buyer=%d seller=%d",
+                            settled.tradeId(), settled.buyerUserId(), settled.sellerUserId()));
+                    break;
+                case BalanceSnapshotEndDecoder.TEMPLATE_ID:
+                    balSnapEnd.wrapAndApplyHeader(buffer, offset, header);
+                    lines.add(String.format("BALSNAPEND corr=%d count=%d",
+                            balSnapEnd.correlationId(), balSnapEnd.entryCount()));
+                    break;
+                case HoldSnapshotEntryDecoder.TEMPLATE_ID:
+                    holdSnapEntry.wrapAndApplyHeader(buffer, offset, header);
+                    lines.add(String.format("HOLDSNAPENTRY order=%d u=%d asset=%d remaining=%d",
+                            holdSnapEntry.orderId(), holdSnapEntry.userId(), holdSnapEntry.assetId(),
+                            holdSnapEntry.remaining()));
+                    break;
+                case HoldSnapshotEndDecoder.TEMPLATE_ID:
+                    holdSnapEnd.wrapAndApplyHeader(buffer, offset, header);
+                    lines.add(String.format("HOLDSNAPEND corr=%d count=%d",
+                            holdSnapEnd.correlationId(), holdSnapEnd.entryCount()));
+                    break;
+                case FeedPositionReportDecoder.TEMPLATE_ID:
+                    feedPos.wrapAndApplyHeader(buffer, offset, header);
+                    lines.add(String.format("FEEDPOS corr=%d consumePos=%d lastTradeId=%d",
+                            feedPos.correlationId(), feedPos.consumePosition(), feedPos.lastAppliedTradeId()));
+                    break;
+                default:
+                    lines.add("UNKNOWN template " + header.templateId());
+            }
+        }
+    }
+
+    private final MutableDirectBuffer ingress = new UnsafeBuffer(new byte[4096]);
+    private final MessageHeaderEncoder header = new MessageHeaderEncoder();
+    private final DepositEncoder depositEncoder = new DepositEncoder();
+    private final WithdrawEncoder withdrawEncoder = new WithdrawEncoder();
+    private final HoldEncoder holdEncoder = new HoldEncoder();
+    private final SettleEncoder settleEncoder = new SettleEncoder();
+    private final InitTradeHighWaterEncoder initEncoder = new InitTradeHighWaterEncoder();
+    private final RequestBalanceSnapshotEncoder balSnapReqEncoder = new RequestBalanceSnapshotEncoder();
+    private final RequestHoldSnapshotEncoder holdSnapReqEncoder = new RequestHoldSnapshotEncoder();
+    private final TerminalReleaseEncoder terminalReleaseEncoder = new TerminalReleaseEncoder();
+    private final QueryFeedPositionEncoder queryFeedPosEncoder = new QueryFeedPositionEncoder();
+
+    @Test
+    public void depositHoldSettleRoundTripThroughTheWire() {
+        AssetsEngine engine = new AssetsEngine();
+        CapturingEgress egress = new CapturingEgress();
+        engine.setEventSink(new AssetsEventPublisher(egress, () -> false));
+        AssetsSbeDemuxer demuxer = new AssetsSbeDemuxer(engine, new SettlementProjector(engine));
+
+        // seller (100) deposits 1 BTC, buyer (200) deposits 60000 USD (correlationIds echoed on the acks)
+        deposit(demuxer, 11, 100, Asset.BTC.id(), FixedPoint.fromDouble(1.0));
+        deposit(demuxer, 12, 200, Asset.USD.id(), FixedPoint.fromDouble(60000.0));
+        // both place holds
+        hold(demuxer, 21, 1, 100, Asset.BTC.id(), FixedPoint.fromDouble(1.0));
+        hold(demuxer, 22, 2, 200, Asset.USD.id(), FixedPoint.fromDouble(60000.0));
+        // a full 1 BTC @ 60000 settlement (taker=buyer)
+        settle(demuxer, 1, 1, 2, 200, 1, 100, FixedPoint.fromDouble(60000.0), FixedPoint.fromDouble(1.0), true);
+
+        // Engine ended where the money should be:
+        assertEquals(FixedPoint.fromDouble(1.0), engine.account(200).available(Asset.BTC.id()));
+        assertEquals(FixedPoint.fromDouble(60000.0), engine.account(100).available(Asset.USD.id()));
+        assertEquals(0L, engine.account(200).locked(Asset.USD.id()));
+        assertEquals(0L, engine.account(100).locked(Asset.BTC.id()));
+
+        // And the egress, decoded back off the wire, matches the settlement bookkeeping (acks echo corr).
+        List<String> expected = List.of(
+                "DEPOSITACK corr=11 u=100 asset=1 amt=100000000 newAvail=100000000",
+                "BALANCE u=100 asset=1 avail=100000000 locked=0",
+                "DEPOSITACK corr=12 u=200 asset=0 amt=6000000000000 newAvail=6000000000000",
+                "BALANCE u=200 asset=0 avail=6000000000000 locked=0",
+                "HOLDACK corr=21 order=1 u=100 asset=1 amt=100000000",
+                "BALANCE u=100 asset=1 avail=0 locked=100000000",
+                "HOLDACK corr=22 order=2 u=200 asset=0 amt=6000000000000",
+                "BALANCE u=200 asset=0 avail=0 locked=6000000000000",
+                "BALANCE u=200 asset=0 avail=0 locked=0",
+                "BALANCE u=200 asset=1 avail=100000000 locked=0",
+                "BALANCE u=100 asset=1 avail=0 locked=0",
+                "BALANCE u=100 asset=0 avail=6000000000000 locked=0",
+                "SETTLED tradeId=1 buyer=200 seller=100");
+        assertEquals(expected, egress.lines);
+    }
+
+    @Test
+    public void feedPathAdvancesConsumePositionAndAnswersFeedQuery() {
+        AssetsEngine engine = new AssetsEngine();
+        CapturingEgress egress = new CapturingEgress();
+        engine.setEventSink(new AssetsEventPublisher(egress, () -> false));
+        AssetsSbeDemuxer demuxer = new AssetsSbeDemuxer(engine, new SettlementProjector(engine));
+
+        deposit(demuxer, 1, 100, Asset.BTC.id(), FixedPoint.fromDouble(2.0));
+        deposit(demuxer, 2, 200, Asset.USD.id(), FixedPoint.fromDouble(120000.0));
+        hold(demuxer, 3, 1, 100, Asset.BTC.id(), FixedPoint.fromDouble(2.0));      // sell 2 BTC
+        hold(demuxer, 4, 2, 200, Asset.USD.id(), FixedPoint.fromDouble(120000.0)); // buy budget
+
+        // A feed-forward settle stamped with the ME journal position advances the cursor with the money.
+        settleAt(demuxer, 7_777L, 1, 1, 2, 200, 1, 100,
+                FixedPoint.fromDouble(60000.0), FixedPoint.fromDouble(1.0), true);
+        assertEquals(7_777L, engine.getConsumePosition());
+        assertEquals(1L, engine.getLastAppliedTradeId());
+
+        // Terminal for the half-consumed sell releases its residual (1 BTC) and advances further.
+        terminalRelease(demuxer, 7_900L, 1, 100);
+        assertEquals(7_900L, engine.getConsumePosition());
+        assertEquals(FixedPoint.fromDouble(1.0), engine.account(100).available(Asset.BTC.id()));
+        assertEquals(0L, engine.account(100).locked(Asset.BTC.id()));
+
+        // Terminal for an unknown order is a money no-op but still advances the cursor.
+        terminalRelease(demuxer, 8_000L, 999, 100);
+        assertEquals(8_000L, engine.getConsumePosition());
+
+        // An over-replayed (stale) position never regresses the cursor.
+        terminalRelease(demuxer, 7_500L, 998, 100);
+        assertEquals(8_000L, engine.getConsumePosition());
+
+        // The feed query answers cursor + settlement high-water, decoded back off the wire.
+        egress.lines.clear();
+        queryFeedPosition(demuxer, 42);
+        assertEquals(List.of("FEEDPOS corr=42 consumePos=8000 lastTradeId=1"), egress.lines);
+    }
+
+    /**
+     * The v5 SettleBatch ingress: entries apply strictly in group order with per-entry semantics
+     * identical to single Settle — including the tradeId idempotency high-water and the
+     * journalPosition -> consumePosition advance. A batch straddling the high-water must skip the
+     * already-applied entry and apply the rest, exactly as three single Settles would.
+     */
+    @Test
+    public void settleBatchAppliesEntriesInOrderWithSingleSettleSemantics() {
+        AssetsEngine engine = new AssetsEngine();
+        CapturingEgress egress = new CapturingEgress();
+        engine.setEventSink(new AssetsEventPublisher(egress, () -> false));
+        AssetsSbeDemuxer demuxer = new AssetsSbeDemuxer(engine, new SettlementProjector(engine));
+
+        // Seller has 2 BTC held, buyer has 120k USD held: room for exactly two 1-BTC settles.
+        deposit(demuxer, 1, 100, Asset.BTC.id(), FixedPoint.fromDouble(2.0));
+        deposit(demuxer, 2, 200, Asset.USD.id(), FixedPoint.fromDouble(120000.0));
+        hold(demuxer, 3, 1, 100, Asset.BTC.id(), FixedPoint.fromDouble(2.0));
+        hold(demuxer, 4, 2, 200, Asset.USD.id(), FixedPoint.fromDouble(120000.0));
+
+        // Trade 1 lands as a single Settle: the high-water is now 1.
+        settleAt(demuxer, 5_000L, 1, 1, 2, 200, 1, 100,
+                FixedPoint.fromDouble(60000.0), FixedPoint.fromDouble(1.0), true);
+        egress.lines.clear();
+
+        // Batch of [trade 1 (already applied), trade 2 (new)]: entry 1 must be an idempotent no-op,
+        // entry 2 must settle, and the cursor must land on the LAST entry's journalPosition.
+        SettleBatchEncoder batchEncoder = new SettleBatchEncoder();
+        SettleBatchEncoder.SettlesEncoder g = batchEncoder
+                .wrapAndApplyHeader(ingress, 0, header)
+                .settlesCount(2);
+        g.next()
+                .tradeId(1).marketId(1)
+                .takerOrderId(2).takerUserId(200).makerOrderId(1).makerUserId(100)
+                .price(FixedPoint.fromDouble(60000.0)).quantity(FixedPoint.fromDouble(1.0))
+                .takerIsBuy(BoolFlag.TRUE).journalPosition(5_000L);
+        g.next()
+                .tradeId(2).marketId(1)
+                .takerOrderId(2).takerUserId(200).makerOrderId(1).makerUserId(100)
+                .price(FixedPoint.fromDouble(60000.0)).quantity(FixedPoint.fromDouble(1.0))
+                .takerIsBuy(BoolFlag.TRUE).journalPosition(6_000L);
+        demuxer.dispatch(ingress, 0,
+                MessageHeaderEncoder.ENCODED_LENGTH + batchEncoder.encodedLength(), 1000L);
+
+        // Only trade 2 applied: exactly one settle's egress (4 balance lines + 1 SETTLED).
+        assertEquals(List.of(
+                "BALANCE u=200 asset=0 avail=0 locked=0",
+                "BALANCE u=200 asset=1 avail=200000000 locked=0",
+                "BALANCE u=100 asset=1 avail=0 locked=0",
+                "BALANCE u=100 asset=0 avail=12000000000000 locked=0",
+                "SETTLED tradeId=2 buyer=200 seller=100"), egress.lines);
+
+        // Money ended where two settles put it, not three.
+        assertEquals(FixedPoint.fromDouble(2.0), engine.account(200).available(Asset.BTC.id()));
+        assertEquals(FixedPoint.fromDouble(120000.0), engine.account(100).available(Asset.USD.id()));
+        assertEquals(2L, engine.getLastAppliedTradeId());
+        assertEquals("cursor advances to the batch's last journalPosition",
+                6_000L, engine.getConsumePosition());
+    }
+
+    @Test
+    public void withdrawAckAndRejectRoundTrip() {
+        AssetsEngine engine = new AssetsEngine();
+        CapturingEgress egress = new CapturingEgress();
+        engine.setEventSink(new AssetsEventPublisher(egress, () -> false));
+        AssetsSbeDemuxer demuxer = new AssetsSbeDemuxer(engine, new SettlementProjector(engine));
+
+        deposit(demuxer, 1, 300, Asset.USD.id(), FixedPoint.fromDouble(1000.0));
+        withdraw(demuxer, 2, 300, Asset.USD.id(), FixedPoint.fromDouble(300.0));   // accepted
+        withdraw(demuxer, 3, 300, Asset.USD.id(), FixedPoint.fromDouble(800.0));   // rejected (only 700 left)
+
+        List<String> expected = List.of(
+                "DEPOSITACK corr=1 u=300 asset=0 amt=100000000000 newAvail=100000000000",
+                "BALANCE u=300 asset=0 avail=100000000000 locked=0",
+                "WITHDRAWACK corr=2 u=300 asset=0 amt=30000000000 newAvail=70000000000",
+                "BALANCE u=300 asset=0 avail=70000000000 locked=0",
+                "WITHDRAWREJECT corr=3 u=300 asset=0 amt=80000000000 reason=INSUFFICIENT_FUNDS");
+        assertEquals(expected, egress.lines);
+    }
+
+    @Test
+    public void snapshotQueriesRoundTrip() {
+        AssetsEngine engine = new AssetsEngine();
+        CapturingEgress egress = new CapturingEgress();
+        engine.setEventSink(new AssetsEventPublisher(egress, () -> false));
+        AssetsSbeDemuxer demuxer = new AssetsSbeDemuxer(engine, new SettlementProjector(engine));
+
+        deposit(demuxer, 0, 100, Asset.USD.id(), FixedPoint.fromDouble(1000.0));
+        deposit(demuxer, 0, 200, Asset.BTC.id(), FixedPoint.fromDouble(2.0));
+        hold(demuxer, 0, 1, 100, Asset.USD.id(), FixedPoint.fromDouble(600.0));
+        hold(demuxer, 0, 2, 200, Asset.BTC.id(), FixedPoint.fromDouble(0.5));
+        egress.lines.clear(); // drop the setup egress; assert only the query answers
+
+        requestBalanceSnapshot(demuxer, 777);
+        requestHoldSnapshot(demuxer, 888);
+
+        List<String> expected = List.of(
+                // balances streamed userId-ascending, asset-ascending; both users have exactly one asset
+                "BALANCE u=100 asset=0 avail=40000000000 locked=60000000000",
+                "BALANCE u=200 asset=1 avail=150000000 locked=50000000",
+                "BALSNAPEND corr=777 count=2",
+                // holds streamed userId-ascending then orderId-ascending
+                "HOLDSNAPENTRY order=1 u=100 asset=0 remaining=60000000000",
+                "HOLDSNAPENTRY order=2 u=200 asset=1 remaining=50000000",
+                "HOLDSNAPEND corr=888 count=2");
+        assertEquals(expected, egress.lines);
+    }
+
+    @Test
+    public void initTradeHighWaterPrimesOnlyVirginLedger() {
+        AssetsEngine engine = new AssetsEngine();
+        CapturingEgress egress = new CapturingEgress();
+        engine.setEventSink(new AssetsEventPublisher(egress, () -> false));
+        AssetsSbeDemuxer demuxer = new AssetsSbeDemuxer(engine, new SettlementProjector(engine));
+
+        // Virgin ledger: the primer is accepted and seeds the scalars, emitting no egress.
+        initTradeHighWater(demuxer, 500L, 12345L);
+        assertEquals(500L, engine.getLastAppliedTradeId());
+        assertEquals(12345L, engine.getConsumePosition());
+        assertEquals(0, egress.lines.size());
+
+        // After activity the ledger is no longer virgin: a second primer is a strict no-op.
+        deposit(demuxer, 0, 100, Asset.USD.id(), FixedPoint.fromDouble(1.0));
+        initTradeHighWater(demuxer, 999L, 99999L);
+        assertEquals("high-water unchanged by refused primer", 500L, engine.getLastAppliedTradeId());
+        assertEquals("consumePosition unchanged by refused primer", 12345L, engine.getConsumePosition());
+    }
+
+    // ---- ingress SBE encoding ----
+
+    private void deposit(AssetsSbeDemuxer demuxer, long corr, long userId, int assetId, long amount) {
+        depositEncoder.wrapAndApplyHeader(ingress, 0, header)
+                .correlationId(corr).userId(userId).assetId(assetId).amount(amount);
+        demuxer.dispatch(ingress, 0, MessageHeaderEncoder.ENCODED_LENGTH + depositEncoder.encodedLength(), 1000L);
+    }
+
+    private void withdraw(AssetsSbeDemuxer demuxer, long corr, long userId, int assetId, long amount) {
+        withdrawEncoder.wrapAndApplyHeader(ingress, 0, header)
+                .correlationId(corr).userId(userId).assetId(assetId).amount(amount);
+        demuxer.dispatch(ingress, 0, MessageHeaderEncoder.ENCODED_LENGTH + withdrawEncoder.encodedLength(), 1000L);
+    }
+
+    private void hold(AssetsSbeDemuxer demuxer, long corr, long orderId, long userId, int assetId, long amount) {
+        holdEncoder.wrapAndApplyHeader(ingress, 0, header)
+                .correlationId(corr).orderId(orderId).userId(userId).assetId(assetId).amount(amount);
+        demuxer.dispatch(ingress, 0, MessageHeaderEncoder.ENCODED_LENGTH + holdEncoder.encodedLength(), 1000L);
+    }
+
+    private void settle(AssetsSbeDemuxer demuxer, long tradeId, int marketId, long takerOrder, long takerUser,
+                        long makerOrder, long makerUser, long price, long qty, boolean takerIsBuy) {
+        settleAt(demuxer, 0L, tradeId, marketId, takerOrder, takerUser, makerOrder, makerUser, price, qty, takerIsBuy);
+    }
+
+    private void settleAt(AssetsSbeDemuxer demuxer, long journalPosition, long tradeId, int marketId,
+                          long takerOrder, long takerUser, long makerOrder, long makerUser,
+                          long price, long qty, boolean takerIsBuy) {
+        settleEncoder.wrapAndApplyHeader(ingress, 0, header)
+                .tradeId(tradeId).marketId(marketId)
+                .takerOrderId(takerOrder).takerUserId(takerUser)
+                .makerOrderId(makerOrder).makerUserId(makerUser)
+                .price(price).quantity(qty)
+                .takerIsBuy(takerIsBuy ? BoolFlag.TRUE : BoolFlag.FALSE)
+                .journalPosition(journalPosition);
+        demuxer.dispatch(ingress, 0, MessageHeaderEncoder.ENCODED_LENGTH + settleEncoder.encodedLength(), 1000L);
+    }
+
+    private void terminalRelease(AssetsSbeDemuxer demuxer, long journalPosition, long orderId, long userId) {
+        terminalReleaseEncoder.wrapAndApplyHeader(ingress, 0, header)
+                .journalPosition(journalPosition).orderId(orderId).userId(userId).timestamp(1000L);
+        demuxer.dispatch(ingress, 0, MessageHeaderEncoder.ENCODED_LENGTH + terminalReleaseEncoder.encodedLength(), 1000L);
+    }
+
+    private void queryFeedPosition(AssetsSbeDemuxer demuxer, long corr) {
+        queryFeedPosEncoder.wrapAndApplyHeader(ingress, 0, header).correlationId(corr);
+        demuxer.dispatch(ingress, 0, MessageHeaderEncoder.ENCODED_LENGTH + queryFeedPosEncoder.encodedLength(), 1000L);
+    }
+
+    private void initTradeHighWater(AssetsSbeDemuxer demuxer, long tradeId, long consumePosition) {
+        initEncoder.wrapAndApplyHeader(ingress, 0, header).tradeId(tradeId).consumePosition(consumePosition);
+        demuxer.dispatch(ingress, 0, MessageHeaderEncoder.ENCODED_LENGTH + initEncoder.encodedLength(), 1000L);
+    }
+
+    private void requestBalanceSnapshot(AssetsSbeDemuxer demuxer, long corr) {
+        balSnapReqEncoder.wrapAndApplyHeader(ingress, 0, header).correlationId(corr);
+        demuxer.dispatch(ingress, 0, MessageHeaderEncoder.ENCODED_LENGTH + balSnapReqEncoder.encodedLength(), 1000L);
+    }
+
+    private void requestHoldSnapshot(AssetsSbeDemuxer demuxer, long corr) {
+        holdSnapReqEncoder.wrapAndApplyHeader(ingress, 0, header).correlationId(corr);
+        demuxer.dispatch(ingress, 0, MessageHeaderEncoder.ENCODED_LENGTH + holdSnapReqEncoder.encodedLength(), 1000L);
+    }
+
+    /**
+     * Every egress message must be filed under the channel a subscriber would expect. This is not
+     * cosmetic: a frame filed under the wrong channel is silently dropped for any session that did not
+     * subscribe to that channel, which looks exactly like the engine never emitting it. A new message
+     * added without a channel decision would land here.
+     */
+    @Test
+    public void everyEventIsFiledUnderTheChannelSubscribersExpect() {
+        final CapturingEgress egress = new CapturingEgress();
+        final AssetsEventPublisher p = new AssetsEventPublisher(egress, () -> false);
+
+        p.onHoldAck(1, 2, 3, 0, 100);
+        assertChannel(egress, AssetsEventPublisher.CH_ACKS, "HoldAck");
+        p.onHoldReject(1, 2, 3, 0, 100, com.openexchange.assets.domain.RejectReason.INSUFFICIENT_FUNDS);
+        assertChannel(egress, AssetsEventPublisher.CH_ACKS, "HoldReject");
+        p.onDepositAck(1, 2, 0, 100, 100);
+        assertChannel(egress, AssetsEventPublisher.CH_ACKS, "DepositAck");
+        p.onWithdrawAck(1, 2, 0, 100, 0);
+        assertChannel(egress, AssetsEventPublisher.CH_ACKS, "WithdrawAck");
+        p.onWithdrawReject(1, 2, 0, 100, com.openexchange.assets.domain.RejectReason.INSUFFICIENT_FUNDS);
+        assertChannel(egress, AssetsEventPublisher.CH_ACKS, "WithdrawReject");
+        p.onFeedPositionReport(1, 42, 7, true);
+        assertChannel(egress, AssetsEventPublisher.CH_ACKS, "FeedPositionReport");
+
+        p.onBalanceUpdate(2, 0, 100, 0);
+        assertChannel(egress, AssetsEventPublisher.CH_BALANCES, "BalanceUpdate");
+
+        p.onSettlementApplied(9, 1, 2);
+        assertChannel(egress, AssetsEventPublisher.CH_SETTLEMENTS, "SettlementApplied");
+        p.onSettleFault(9, 1, 2, 0, 5, 5);
+        assertChannel(egress, AssetsEventPublisher.CH_SETTLEMENTS, "SettleFault");
+
+        p.onBalanceSnapshotEnd(1, 3);
+        assertChannel(egress, AssetsEventPublisher.CH_SNAPSHOTS, "BalanceSnapshotEnd");
+        p.onHoldSnapshotEntry(1, 2, 0, 50);
+        assertChannel(egress, AssetsEventPublisher.CH_SNAPSHOTS, "HoldSnapshotEntry");
+        p.onHoldSnapshotEnd(1, 1);
+        assertChannel(egress, AssetsEventPublisher.CH_SNAPSHOTS, "HoldSnapshotEnd");
+    }
+
+    /**
+     * The routing table, method by method: request-scoped events go to the ORIGIN session only,
+     * shared streams BROADCAST. Misrouting is silently wrong in both directions — an ORIGIN frame
+     * broadcast resurrects the foreign-ack fanout this table removed; a BROADCAST frame origin-scoped
+     * starves every other consumer of money events. BalanceUpdate is the context-dependent one:
+     * BROADCAST live, ORIGIN while a query reply is being streamed (the balance-snapshot entries).
+     */
+    @Test
+    public void everyEventIsRoutedToOriginOrBroadcastAsDesigned() {
+        final boolean[] queryReply = {false};
+        final CapturingEgress egress = new CapturingEgress();
+        final AssetsEventPublisher p = new AssetsEventPublisher(egress, () -> queryReply[0]);
+
+        p.onDepositAck(1, 2, 0, 100, 100);
+        assertRouting(egress, AssetsEventPublisher.Routing.ORIGIN, "DepositAck");
+        p.onWithdrawAck(1, 2, 0, 100, 0);
+        assertRouting(egress, AssetsEventPublisher.Routing.ORIGIN, "WithdrawAck");
+        p.onHoldAck(1, 2, 3, 0, 100);
+        assertRouting(egress, AssetsEventPublisher.Routing.ORIGIN, "HoldAck");
+        p.onHoldReject(1, 2, 3, 0, 100, com.openexchange.assets.domain.RejectReason.INSUFFICIENT_FUNDS);
+        assertRouting(egress, AssetsEventPublisher.Routing.ORIGIN, "HoldReject");
+        p.onWithdrawReject(1, 2, 0, 100, com.openexchange.assets.domain.RejectReason.INSUFFICIENT_FUNDS);
+        assertRouting(egress, AssetsEventPublisher.Routing.ORIGIN, "WithdrawReject");
+        p.onFeedPositionReport(1, 42, 7, true);
+        assertRouting(egress, AssetsEventPublisher.Routing.ORIGIN, "FeedPositionReport");
+        p.onBalanceSnapshotEnd(1, 3);
+        assertRouting(egress, AssetsEventPublisher.Routing.ORIGIN, "BalanceSnapshotEnd");
+        p.onHoldSnapshotEntry(1, 2, 0, 50);
+        assertRouting(egress, AssetsEventPublisher.Routing.ORIGIN, "HoldSnapshotEntry");
+        p.onHoldSnapshotEnd(1, 1);
+        assertRouting(egress, AssetsEventPublisher.Routing.ORIGIN, "HoldSnapshotEnd");
+
+        p.onSettlementApplied(9, 1, 2);
+        assertRouting(egress, AssetsEventPublisher.Routing.BROADCAST, "SettlementApplied");
+        p.onSettleFault(9, 1, 2, 0, 5, 5);
+        assertRouting(egress, AssetsEventPublisher.Routing.BROADCAST, "SettleFault");
+
+        p.onBalanceUpdate(2, 0, 100, 0);
+        assertRouting(egress, AssetsEventPublisher.Routing.BROADCAST, "live BalanceUpdate");
+        queryReply[0] = true;
+        p.onBalanceUpdate(2, 0, 100, 0);
+        assertRouting(egress, AssetsEventPublisher.Routing.ORIGIN, "snapshot-reply BalanceUpdate");
+        queryReply[0] = false;
+        p.onBalanceUpdate(2, 0, 100, 0);
+        assertRouting(egress, AssetsEventPublisher.Routing.BROADCAST, "live BalanceUpdate after the reply");
+    }
+
+    private static void assertChannel(CapturingEgress egress, int expected, String what) {
+        assertEquals(what + " must be filed under channel " + expected,
+                Integer.valueOf(expected), egress.channels.get(egress.channels.size() - 1));
+    }
+
+    private static void assertRouting(CapturingEgress egress, AssetsEventPublisher.Routing expected,
+                                      String what) {
+        assertEquals(what + " must be routed " + expected,
+                expected, egress.routings.get(egress.routings.size() - 1));
+    }
+}

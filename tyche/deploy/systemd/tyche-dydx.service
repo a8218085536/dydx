@@ -1,0 +1,15 @@
+[Unit]
+Description=Tyche dYdX trading service
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/ec2-user/flydex/dydx/tyche
+Environment=PATH=/usr/local/go/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+ExecStart=/home/ec2-user/flydex/dydx/tyche/deploy/start-tyche-dydx.sh
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

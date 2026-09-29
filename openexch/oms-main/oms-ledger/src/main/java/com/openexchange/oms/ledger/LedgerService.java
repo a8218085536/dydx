@@ -1,0 +1,346 @@
+// SPDX-License-Identifier: Apache-2.0
+package com.openexchange.oms.ledger;
+
+import com.match.domain.FixedPoint;
+import com.openexchange.oms.common.domain.Market;
+import com.openexchange.oms.common.domain.OmsOrder;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+/**
+ * Orchestrates ledger operations against the {@link BalanceStore}.
+ * <p>
+ * Each operation mutates balances in the store and reports whether the mutation
+ * was applied. The Assets Engine is the book of record for money movements; the
+ * old derived double-entry journal this service used to emit was never persisted
+ * anywhere and has been removed.
+ */
+public class LedgerService {
+
+    private static final Logger log = LoggerFactory.getLogger(LedgerService.class);
+
+    private final BalanceStore balanceStore;
+
+    public LedgerService(BalanceStore balanceStore) {
+        this.balanceStore = balanceStore;
+    }
+
+    /**
+     * Holds funds for a new order.
+     * <p>
+     * Buy orders hold quote asset: {@code price * quantity}.
+     * Sell orders hold base asset: {@code quantity}.
+     *
+     * @param order the order to hold funds for
+     * @return true if the hold was placed; false if it failed (insufficient
+     *         balance, non-positive or overflowing hold amount)
+     */
+    public boolean holdForOrder(OmsOrder order) {
+        Market market = Market.fromId(order.getMarketId());
+        int holdAssetId;
+        long holdAmount;
+
+        if (order.isBuy()) {
+            // Buy: hold quote asset (price * quantity). Exact since match#30; an
+            // unrepresentable hold can never be funded — fail the hold like any
+            // other invalid amount instead of letting the throw escape.
+            holdAssetId = market.quoteAsset().id();
+            try {
+                holdAmount = FixedPoint.multiply(order.getPrice(), order.getQuantity());
+            } catch (ArithmeticException e) {
+                log.error("Hold amount overflows fixed-point: orderId={}, price={}, qty={}",
+                        order.getOmsOrderId(), order.getPrice(), order.getQuantity());
+                return false;
+            }
+        } else {
+            // Sell: hold base asset (quantity)
+            holdAssetId = market.baseAsset().id();
+            holdAmount = order.getQuantity();
+        }
+
+        if (holdAmount <= 0) {
+            log.error("Calculated hold amount is non-positive: orderId={}, holdAmount={}",
+                    order.getOmsOrderId(), holdAmount);
+            return false;
+        }
+
+        // Synthetic parents (iceberg/stop/trailing) own their terminal release OMS-side: their
+        // cluster-level slices/children share this omsOrderId, so the feed must not release it.
+        boolean success = balanceStore.hold(order.getUserId(), holdAssetId, holdAmount,
+                order.getOmsOrderId(), order.getOrderType().isSynthetic());
+        if (!success) {
+            log.warn("Hold failed for order: orderId={}, userId={}, assetId={}, amount={}",
+                    order.getOmsOrderId(), order.getUserId(), holdAssetId, holdAmount);
+            return false;
+        }
+
+        // Update order with hold metadata
+        order.setHoldAmount(holdAmount);
+
+        log.debug("Hold created: orderId={}, assetId={}, amount={}", order.getOmsOrderId(), holdAssetId, holdAmount);
+        return true;
+    }
+
+    /**
+     * Target total hold for an order amended to (newPrice, newQuantity) — oms#67.
+     * <p>
+     * Mirrors {@link #holdForOrder}'s model so {@link #releaseForCancel}'s
+     * consumed-estimate stays internally consistent after the amend: buy holds
+     * {@code newPrice * newQuantity} quote, sell holds {@code newQuantity} base.
+     *
+     * @return the target hold amount, or -1 when the buy notional overflows fixed-point
+     */
+    public long computeAmendHoldTarget(OmsOrder order, long newPrice, long newQuantity) {
+        if (order.isBuy()) {
+            try {
+                long target = FixedPoint.multiply(newPrice, newQuantity);
+                return target > 0 ? target : -1;
+            } catch (ArithmeticException e) {
+                return -1;
+            }
+        }
+        return newQuantity;
+    }
+
+    /**
+     * Places the incremental hold for an amend that GROWS the order's notional (oms#67).
+     * Runs at amend submit — this is the amend's funds check: an under-funded amend is
+     * rejected here before anything reaches the cluster.
+     *
+     * @return true if the incremental hold was placed; false when the user lacks available funds
+     */
+    public boolean holdAmendDelta(OmsOrder order, long delta) {
+        return moveAmendDelta(order, delta, true);
+    }
+
+    /**
+     * Releases the surplus hold for an amend that SHRANK the order's notional, or rolls
+     * back {@link #holdAmendDelta} when the amend fails (oms#67). Runs at resolution or
+     * abort — never at submit, where the amend could still fail.
+     */
+    public boolean releaseAmendDelta(OmsOrder order, long amount) {
+        return moveAmendDelta(order, amount, false);
+    }
+
+    private boolean moveAmendDelta(OmsOrder order, long amount, boolean hold) {
+        if (amount <= 0) {
+            return false;
+        }
+        Market market = Market.fromId(order.getMarketId());
+        int holdAssetId = order.isBuy() ? market.quoteAsset().id() : market.baseAsset().id();
+
+        boolean success = hold
+                ? balanceStore.hold(order.getUserId(), holdAssetId, amount, order.getOmsOrderId())
+                : balanceStore.release(order.getUserId(), holdAssetId, amount, order.getOmsOrderId());
+        if (!success) {
+            log.warn("Amend hold {} failed: orderId={}, userId={}, assetId={}, amount={}",
+                    hold ? "increase" : "release", order.getOmsOrderId(), order.getUserId(),
+                    holdAssetId, amount);
+            return false;
+        }
+
+        log.debug("Amend hold {}: orderId={}, assetId={}, amount={}",
+                hold ? "increase" : "release", order.getOmsOrderId(), holdAssetId, amount);
+        return true;
+    }
+
+    /**
+     * The signed change in ACTUALLY-locked funds needed to amend {@code order} (currently resting
+     * its remaining quantity at its current price) to {@code (newPrice, newQuantity)}. Positive =
+     * additional hold required (grown notional); negative = surplus to release (shrunk notional).
+     * <p>
+     * OMS-3: already-filled quantity is netted out — those units are settled and no longer held, so
+     * the delta is computed over the REMAINING (unfilled) quantity, not the full quantity. Sizing
+     * the delta off the full quantity (as the old {@code holdTarget − holdAmount} did) over-moves by
+     * {@code (newPrice − oldPrice)·filledQty}, which on a price-lowering amend later drives
+     * {@code releaseForCancel} to release more than remains locked (the all-or-nothing release then
+     * fails outright and strands the funds).
+     * <p>
+     * The order's own {@code holdAmount} stays the FULL notional (see {@link #computeAmendHoldTarget})
+     * so {@code releaseForCancel}'s {@code − price·filledQty} nets correctly after the amend.
+     */
+    public long amendLockedDelta(OmsOrder order, long newPrice, long newQuantity) {
+        long remaining = Math.max(0, order.getQuantity() - order.getFilledQty());
+        long newRemaining = Math.max(0, newQuantity - order.getFilledQty());
+        if (order.isBuy()) {
+            // Bounded by computeAmendHoldTarget's overflow guard upstream (newPrice·newQuantity was
+            // already validated representable), so these narrower products cannot overflow.
+            long current = FixedPoint.multiply(order.getPrice(), remaining);
+            long target = FixedPoint.multiply(newPrice, newRemaining);
+            return target - current;
+        }
+        // Sell holds base = remaining quantity; the price is irrelevant.
+        return newRemaining - remaining;
+    }
+
+    /**
+     * Applies the ledger side of a RESOLVED amend (oms#67 / OMS-3). A grown notional was already
+     * locked at submit (the amend's funds check); a shrunk notional releases its surplus now. Both
+     * net already-filled quantity via {@link #amendLockedDelta}. Then installs the amended notional
+     * as the order's {@code holdAmount} so {@code releaseForCancel} stays exact. Single source of
+     * truth: the lifecycle {@code ReplaceHooks} delegate here rather than re-deriving the math.
+     */
+    public void resolveAmendHold(OmsOrder order) {
+        long delta = amendLockedDelta(order, order.getPendingPrice(), order.getPendingQuantity());
+        if (delta < 0) {
+            releaseAmendDelta(order, -delta);
+        }
+        order.setHoldAmount(order.getPendingHoldTarget());
+    }
+
+    /**
+     * Rolls back the incremental hold placed at amend submit when the amend ABORTS (engine refused,
+     * queue full, order went terminal first). Releases exactly what {@code holdAmendDelta} locked
+     * (tracked in {@code pendingHoldDelta}); the order keeps its original price/quantity/holdAmount.
+     */
+    public void abortAmendHold(OmsOrder order) {
+        long delta = order.getPendingHoldDelta();
+        if (delta > 0) {
+            releaseAmendDelta(order, delta);
+        }
+    }
+
+    /**
+     * Releases remaining held funds when an order is cancelled.
+     * <p>
+     * The release amount is computed as the hold amount minus what was already filled.
+     * For buy orders: {@code holdAmount - (filledQty * price)}.
+     * For sell orders: {@code remainingQty}.
+     *
+     * @param order the cancelled order
+     * @return true if funds were released; false if there was nothing to release or the release failed
+     */
+    public boolean releaseForCancel(OmsOrder order) {
+        Market market = Market.fromId(order.getMarketId());
+        int holdAssetId;
+        long releaseAmount;
+
+        if (order.isBuy()) {
+            // Buy: release remaining quote hold
+            // holdAmount was price * originalQty; already consumed = price * filledQty.
+            // Cannot throw: filledQty <= quantity, so this is bounded by the hold
+            // amount that was representable at admission (settlement-path invariant).
+            holdAssetId = market.quoteAsset().id();
+            long consumed = FixedPoint.multiply(order.getPrice(), order.getFilledQty());
+            releaseAmount = order.getHoldAmount() - consumed;
+        } else {
+            // Sell: release remaining base quantity
+            holdAssetId = market.baseAsset().id();
+            releaseAmount = order.getRemainingQty();
+        }
+
+        if (releaseAmount <= 0) {
+            log.debug("Nothing to release for order: orderId={}", order.getOmsOrderId());
+            return false;
+        }
+
+        // Residual-hold stores (the Assets Engine) know the exact remaining reservation — release
+        // it all (this is also how buy price-improvement comes back). Amount-computing stores keep
+        // the netted math below.
+        boolean success = balanceStore.supportsResidualHolds()
+                ? balanceStore.releaseAll(order.getUserId(), holdAssetId, order.getOmsOrderId())
+                : balanceStore.release(order.getUserId(), holdAssetId, releaseAmount, order.getOmsOrderId());
+        if (!success) {
+            log.error("Release failed for order: orderId={}, userId={}, assetId={}, amount={}",
+                    order.getOmsOrderId(), order.getUserId(), holdAssetId, releaseAmount);
+            return false;
+        }
+
+        log.debug("Release completed: orderId={}, assetId={}, amount={}", order.getOmsOrderId(), holdAssetId, releaseAmount);
+        return true;
+    }
+
+    /**
+     * Settles a trade execution, moving funds between buyer and seller.
+     * <p>
+     * Buyer: locked quote decreases by {@code price * quantity}, available base increases by {@code quantity}.
+     * Seller: locked base decreases by {@code quantity}, available quote increases by {@code price * quantity}.
+     *
+     * @param tradeId          unique trade identifier
+     * @param buyerUserId      buyer's user ID
+     * @param sellerUserId     seller's user ID
+     * @param marketId         market identifier
+     * @param price            execution price (fixed-point)
+     * @param quantity         execution quantity (fixed-point)
+     * @param takerOmsOrderId  taker's OMS order ID
+     * @param makerOmsOrderId  maker's OMS order ID
+     * @return true if the trade was newly applied; false if it was a duplicate (already-seen
+     *         tradeId) or had invalid amounts. Callers use this to detect that the trade was
+     *         NOT newly applied and must skip fill/risk side effects.
+     */
+    public boolean settleTradeExecution(long tradeId, long buyerUserId, long sellerUserId,
+                                        int marketId, long price, long quantity,
+                                        long takerOmsOrderId, long makerOmsOrderId) {
+        Market market = Market.fromId(marketId);
+        int baseAssetId = market.baseAsset().id();
+        int quoteAssetId = market.quoteAsset().id();
+
+        long baseAmount = quantity;
+        long quoteAmount = FixedPoint.multiply(price, quantity);
+
+        if (baseAmount <= 0 || quoteAmount <= 0) {
+            log.error("Invalid trade amounts: tradeId={}, baseAmount={}, quoteAmount={}",
+                    tradeId, baseAmount, quoteAmount);
+            return false;
+        }
+
+        // Idempotent on tradeId: the cluster re-delivers egress on leader switchover, so the same
+        // trade can arrive more than once. settle() applies it at most once and reports duplicates.
+        boolean applied = balanceStore.settle(buyerUserId, sellerUserId, baseAssetId, quoteAssetId,
+                baseAmount, quoteAmount, tradeId);
+        if (!applied) {
+            log.debug("Duplicate trade ignored: tradeId={}", tradeId);
+            return false;
+        }
+
+        log.debug("Trade settled: tradeId={}, buyer={}, seller={}, market={}, price={}, qty={}",
+                tradeId, buyerUserId, sellerUserId, marketId, price, quantity);
+        return true;
+    }
+
+    /**
+     * Releases excess hold when a buy order fills at a price lower than the hold price.
+     * <p>
+     * The overlock amount is {@code (holdPrice - fillPrice) * fillQty}, representing quote asset
+     * that was locked but not needed for the fill.
+     *
+     * @param omsOrderId OMS order ID
+     * @param holdPrice  the price at which funds were originally held (fixed-point)
+     * @param fillPrice  the actual execution price (fixed-point)
+     * @param fillQty    the fill quantity (fixed-point)
+     * @return true if an overlock was released; false if there was no overlock or the release failed
+     */
+    public boolean handleOverlock(long omsOrderId, long userId, int marketId,
+                                  long holdPrice, long fillPrice, long fillQty) {
+        if (balanceStore.supportsResidualHolds()) {
+            // The store settles at fill price from the specific hold: the price-improvement
+            // residual stays in the hold and returns at the order's terminal release.
+            return false;
+        }
+        if (fillPrice >= holdPrice) {
+            // No overlock: filled at or above hold price
+            return false;
+        }
+
+        Market market = Market.fromId(marketId);
+        int quoteAssetId = market.quoteAsset().id();
+
+        long priceDelta = holdPrice - fillPrice;
+        long overlockAmount = FixedPoint.multiply(priceDelta, fillQty);
+
+        if (overlockAmount <= 0) {
+            return false;
+        }
+
+        boolean success = balanceStore.release(userId, quoteAssetId, overlockAmount, omsOrderId);
+        if (!success) {
+            log.error("Overlock release failed: omsOrderId={}, userId={}, quoteAssetId={}, amount={}",
+                    omsOrderId, userId, quoteAssetId, overlockAmount);
+            return false;
+        }
+
+        log.debug("Overlock released: omsOrderId={}, holdPrice={}, fillPrice={}, fillQty={}, released={}",
+                omsOrderId, holdPrice, fillPrice, fillQty, overlockAmount);
+        return true;
+    }
+}

@@ -1,0 +1,307 @@
+[
+	{
+		"anonymous": false,
+		"inputs": [
+			{
+				"indexed": true,
+				"internalType": "address",
+				"name": "wallet",
+				"type": "address"
+			},
+			{
+				"indexed": true,
+				"internalType": "address",
+				"name": "key",
+				"type": "address"
+			},
+			{
+				"indexed": false,
+				"internalType": "string",
+				"name": "data",
+				"type": "string"
+			}
+		],
+		"name": "SessionKeyGranted",
+		"type": "event"
+	},
+	{
+		"anonymous": false,
+		"inputs": [
+			{
+				"indexed": true,
+				"internalType": "address",
+				"name": "wallet",
+				"type": "address"
+			},
+			{
+				"indexed": true,
+				"internalType": "address",
+				"name": "key",
+				"type": "address"
+			}
+		],
+		"name": "SessionKeyRevoked",
+		"type": "event"
+	},
+	{
+		"inputs": [
+			{
+				"internalType": "address",
+				"name": "wallet",
+				"type": "address"
+			},
+			{
+				"internalType": "address",
+				"name": "key",
+				"type": "address"
+			}
+		],
+		"name": "getPermission",
+		"outputs": [
+			{
+				"components": [
+					{
+						"internalType": "bool",
+						"name": "enabled",
+						"type": "bool"
+					},
+					{
+						"internalType": "uint256",
+						"name": "expireAt",
+						"type": "uint256"
+					},
+					{
+						"internalType": "uint256",
+						"name": "maxValue",
+						"type": "uint256"
+					},
+					{
+						"internalType": "uint256",
+						"name": "interval",
+						"type": "uint256"
+					},
+					{
+						"internalType": "uint256",
+						"name": "lastUsed",
+						"type": "uint256"
+					},
+					{
+						"internalType": "uint256",
+						"name": "dailyLimit",
+						"type": "uint256"
+					},
+					{
+						"internalType": "uint256",
+						"name": "dailyUsed",
+						"type": "uint256"
+					},
+					{
+						"internalType": "uint256",
+						"name": "lastReset",
+						"type": "uint256"
+					},
+					{
+						"internalType": "address",
+						"name": "target",
+						"type": "address"
+					},
+					{
+						"internalType": "bytes4",
+						"name": "selector",
+						"type": "bytes4"
+					}
+				],
+				"internalType": "struct KeyManager.SessionPermission",
+				"name": "",
+				"type": "tuple"
+			}
+		],
+		"stateMutability": "view",
+		"type": "function"
+	},
+	{
+		"inputs": [
+			{
+				"internalType": "address",
+				"name": "wallet",
+				"type": "address"
+			},
+			{
+				"internalType": "address",
+				"name": "key",
+				"type": "address"
+			},
+			{
+				"components": [
+					{
+						"internalType": "bool",
+						"name": "enabled",
+						"type": "bool"
+					},
+					{
+						"internalType": "uint256",
+						"name": "expireAt",
+						"type": "uint256"
+					},
+					{
+						"internalType": "uint256",
+						"name": "maxValue",
+						"type": "uint256"
+					},
+					{
+						"internalType": "uint256",
+						"name": "interval",
+						"type": "uint256"
+					},
+					{
+						"internalType": "uint256",
+						"name": "lastUsed",
+						"type": "uint256"
+					},
+					{
+						"internalType": "uint256",
+						"name": "dailyLimit",
+						"type": "uint256"
+					},
+					{
+						"internalType": "uint256",
+						"name": "dailyUsed",
+						"type": "uint256"
+					},
+					{
+						"internalType": "uint256",
+						"name": "lastReset",
+						"type": "uint256"
+					},
+					{
+						"internalType": "address",
+						"name": "target",
+						"type": "address"
+					},
+					{
+						"internalType": "bytes4",
+						"name": "selector",
+						"type": "bytes4"
+					}
+				],
+				"internalType": "struct KeyManager.SessionPermission",
+				"name": "permission",
+				"type": "tuple"
+			},
+			{
+				"internalType": "string",
+				"name": "data",
+				"type": "string"
+			}
+		],
+		"name": "grantSessionKey",
+		"outputs": [],
+		"stateMutability": "nonpayable",
+		"type": "function"
+	},
+	{
+		"inputs": [
+			{
+				"internalType": "address",
+				"name": "",
+				"type": "address"
+			},
+			{
+				"internalType": "address",
+				"name": "",
+				"type": "address"
+			}
+		],
+		"name": "permissions",
+		"outputs": [
+			{
+				"internalType": "bool",
+				"name": "enabled",
+				"type": "bool"
+			},
+			{
+				"internalType": "uint256",
+				"name": "expireAt",
+				"type": "uint256"
+			},
+			{
+				"internalType": "uint256",
+				"name": "maxValue",
+				"type": "uint256"
+			},
+			{
+				"internalType": "uint256",
+				"name": "interval",
+				"type": "uint256"
+			},
+			{
+				"internalType": "uint256",
+				"name": "lastUsed",
+				"type": "uint256"
+			},
+			{
+				"internalType": "uint256",
+				"name": "dailyLimit",
+				"type": "uint256"
+			},
+			{
+				"internalType": "uint256",
+				"name": "dailyUsed",
+				"type": "uint256"
+			},
+			{
+				"internalType": "uint256",
+				"name": "lastReset",
+				"type": "uint256"
+			},
+			{
+				"internalType": "address",
+				"name": "target",
+				"type": "address"
+			},
+			{
+				"internalType": "bytes4",
+				"name": "selector",
+				"type": "bytes4"
+			}
+		],
+		"stateMutability": "view",
+		"type": "function"
+	},
+	{
+		"inputs": [
+			{
+				"internalType": "address",
+				"name": "wallet",
+				"type": "address"
+			},
+			{
+				"internalType": "address",
+				"name": "key",
+				"type": "address"
+			}
+		],
+		"name": "revokeSessionKey",
+		"outputs": [],
+		"stateMutability": "nonpayable",
+		"type": "function"
+	},
+	{
+		"inputs": [
+			{
+				"internalType": "address",
+				"name": "wallet",
+				"type": "address"
+			},
+			{
+				"internalType": "address",
+				"name": "key",
+				"type": "address"
+			}
+		],
+		"name": "updateUsage",
+		"outputs": [],
+		"stateMutability": "nonpayable",
+		"type": "function"
+	}
+]

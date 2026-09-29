@@ -1,0 +1,738 @@
+// SPDX-License-Identifier: Apache-2.0
+package com.match.application.orderbook;
+
+import com.match.domain.Order;
+import org.agrona.collections.Long2LongHashMap;
+
+/**
+ * Ultra-low latency order book using direct array indexing.
+ * Achieves O(1) for all operations with ZERO allocations in hot path.
+ *
+ * Design:
+ * - Price levels are stored in a fixed-size array indexed by price
+ * - Index = (price - basePrice) / tickSize
+ * - Orders at each level stored in circular buffer
+ * - Min/max price indices cached for O(1) best price
+ *
+ * Memory layout optimized for cache efficiency.
+ */
+public class DirectIndexOrderBook {
+
+    // Price configuration (fixed-point, 8 decimals)
+    private final long basePrice;      // Minimum price in range
+    private final long tickSize;       // Price increment
+    private final int maxPriceLevels;  // Number of price slots
+
+    // Order storage - circular buffers per price level
+    // Each level can hold up to maxOrdersPerLevel orders.
+    //
+    // Slice C (EngineConfig): the historical compiled-in cap. This remains the ONLY value legacy
+    // (env-mode) engines ever use — the 4-arg constructor pins it — so legacy behavior and memory
+    // layout are bit-for-bit unchanged. Config-mode engines pass the LOG-REPLICATED cap from
+    // EngineConfig instead (deterministic across replicas: it arrives as a cluster message, never
+    // from a node's env). Also the "effective value" the adopt-path cross-check compares against.
+    public static final int DEFAULT_MAX_ORDERS_PER_LEVEL = 64;  // Reduced for memory efficiency
+    private final int maxOrdersPerLevel;
+    private static final int ORDER_FIELDS = 4; // orderId, userId, remainingQty, next
+
+    // Packed order data: [orderId, userId, remainingQty, nextOrderIdx]
+    // Layout: orders[priceIdx * maxOrdersPerLevel * ORDER_FIELDS + orderSlot * ORDER_FIELDS + field]
+    private final long[] orders;
+
+    // Level metadata: [headIdx, tailIdx, orderCount, totalQty]
+    private static final int LEVEL_FIELDS = 4;
+    private final long[] levels;
+
+    // Best price tracking - volatile for cross-thread visibility (scheduler reads these)
+    private volatile int bestPriceIdx = -1;     // Index of best price (-1 = empty)
+    private volatile int worstPriceIdx = -1;    // Index of worst price
+    private volatile int activeLevelCount = 0;
+
+    // Version counter for memory barrier - incremented on every modification
+    // Readers should read this BEFORE reading levels array to ensure visibility
+    private volatile long version = 0;
+
+    // Direction: true = ascending (ask), false = descending (bid)
+    private final boolean ascending;
+
+    // Order ID to location mapping for O(1) cancel
+    // Maps orderId -> packed(priceIdx, slotIdx) using Agrona's zero-allocation hash map
+    private final Long2LongHashMap orderLocations;
+    private static final long EMPTY_LOCATION = -1L;
+
+    // Free slot tracking per level (simple stack)
+    private final int[] freeSlots;  // Stack of free slot indices per level
+    private final int[] freeSlotCounts;
+
+    /**
+     * Create order book for a price range.
+     *
+     * @param basePrice     Minimum price (fixed-point)
+     * @param maxPrice      Maximum price (fixed-point)
+     * @param tickSize      Price increment (fixed-point)
+     * @param ascending     true for ask side, false for bid side
+     */
+    public DirectIndexOrderBook(long basePrice, long maxPrice, long tickSize, boolean ascending) {
+        this(basePrice, maxPrice, tickSize, ascending, DEFAULT_MAX_ORDERS_PER_LEVEL);
+    }
+
+    /**
+     * Slice C (EngineConfig): construct with an explicit per-level order cap. Only config-mode
+     * engines use this, passing the LOG-REPLICATED {@code maxOrdersPerLevel} from EngineConfig;
+     * every legacy caller goes through the 4-arg constructor above, which pins the historical
+     * {@link #DEFAULT_MAX_ORDERS_PER_LEVEL} — identical memory layout and behavior.
+     */
+    public DirectIndexOrderBook(long basePrice, long maxPrice, long tickSize, boolean ascending,
+                                int maxOrdersPerLevel) {
+        this.maxOrdersPerLevel = maxOrdersPerLevel;
+        this.basePrice = basePrice;
+        this.tickSize = tickSize;
+        this.ascending = ascending;
+        this.maxPriceLevels = (int) ((maxPrice - basePrice) / tickSize) + 1;
+
+        // Allocate all memory upfront
+        this.orders = new long[maxPriceLevels * maxOrdersPerLevel * ORDER_FIELDS];
+        this.levels = new long[maxPriceLevels * LEVEL_FIELDS];
+        this.orderLocations = new Long2LongHashMap(EMPTY_LOCATION);
+        this.freeSlots = new int[maxPriceLevels * maxOrdersPerLevel];
+        this.freeSlotCounts = new int[maxPriceLevels];
+
+        // Initialize free slot stacks
+        for (int priceIdx = 0; priceIdx < maxPriceLevels; priceIdx++) {
+            int baseSlotIdx = priceIdx * maxOrdersPerLevel;
+            for (int slot = 0; slot < maxOrdersPerLevel; slot++) {
+                freeSlots[baseSlotIdx + slot] = slot;
+            }
+            freeSlotCounts[priceIdx] = maxOrdersPerLevel;
+        }
+
+        // Pre-touch all memory to ensure arrays are fully paged in
+        preTouch();
+    }
+
+    /**
+     * Pre-touch all arrays to ensure memory is fully paged in.
+     * Call this at startup to avoid page faults during trading.
+     */
+    private void preTouch() {
+        // Touch orders array
+        for (int i = 0; i < orders.length; i += 64) { // 64 longs = 512 bytes per cache line
+            orders[i] = 0;
+        }
+        // Touch levels array
+        for (int i = 0; i < levels.length; i += 64) {
+            levels[i] = 0;
+        }
+        // Touch free slots array
+        for (int i = 0; i < freeSlots.length; i += 64) {
+            // Just read, already initialized
+            int unused = freeSlots[i];
+        }
+    }
+
+    /**
+     * Convert price to array index. O(1)
+     */
+    private int priceToIndex(long price) {
+        return (int) ((price - basePrice) / tickSize);
+    }
+
+    /**
+     * Convert array index to price. O(1)
+     */
+    private long indexToPrice(int idx) {
+        return basePrice + (long) idx * tickSize;
+    }
+
+    /**
+     * Validate a price against this book's geometry without modifying state.
+     *
+     * @return OrderRejectReason.NONE if the price is on-tick and in range
+     */
+    public int validatePrice(long price) {
+        long offset = price - basePrice;
+        if (offset < 0) return OrderRejectReason.PRICE_OUT_OF_RANGE;
+        if (offset % tickSize != 0) return OrderRejectReason.PRICE_OFF_TICK;
+        if (offset / tickSize >= maxPriceLevels) return OrderRejectReason.PRICE_OUT_OF_RANGE;
+        return OrderRejectReason.NONE;
+    }
+
+    /**
+     * Add order to book. O(1) amortized.
+     *
+     * @return OrderRejectReason.NONE on success, otherwise the reject reason.
+     *         Loud-limits principle: callers must check this and reject visibly.
+     */
+    public int addOrder(long orderId, long userId, long price, long quantity) {
+        // Belt-and-suspenders (match#91): a non-positive quantity must never rest — a qty=0 order
+        // poisons the head of its level. Guard ABOVE the compaction/geometry checks so no such order
+        // ever reaches the slot pool. The engine already rejects these at admission.
+        if (quantity <= 0) return OrderRejectReason.INVALID_QUANTITY;
+
+        int validity = validatePrice(price);
+        if (validity != OrderRejectReason.NONE) return validity;
+
+        int priceIdx = priceToIndex(price);
+
+        // Get free slot at this price level.
+        // Under allocation pressure, first reclaim tombstoned slots (match#94): cancels and
+        // requotes at a level pinned live by ANOTHER order leave qty=0 tombstones in the chain
+        // that the lazy head-advance never reaches (the head never moves because the level never
+        // trades). Compact once — walk the chain, unlink and free every tombstone — before
+        // declaring the level full. Only a level with 64 genuinely-live orders stays full.
+        if (freeSlotCounts[priceIdx] == 0) {
+            compactLevel(priceIdx);
+            if (freeSlotCounts[priceIdx] == 0) return OrderRejectReason.LEVEL_FULL;
+        }
+
+        int slotStackBase = priceIdx * maxOrdersPerLevel;
+        int slot = freeSlots[slotStackBase + --freeSlotCounts[priceIdx]];
+
+        // Store order data
+        int orderBase = (priceIdx * maxOrdersPerLevel + slot) * ORDER_FIELDS;
+        orders[orderBase] = orderId;
+        orders[orderBase + 1] = userId;
+        orders[orderBase + 2] = quantity;
+        orders[orderBase + 3] = -1; // No next order yet
+
+        // Update level metadata
+        int levelBase = priceIdx * LEVEL_FIELDS;
+        long orderCount = levels[levelBase + 2];
+
+        if (orderCount == 0) {
+            // First order at this level
+            levels[levelBase] = slot;     // head
+            levels[levelBase + 1] = slot; // tail
+            activeLevelCount++;
+            updateBestWorstPrice(priceIdx, true);
+        } else {
+            // Append to tail
+            int tailSlot = (int) levels[levelBase + 1];
+            int tailOrderBase = (priceIdx * maxOrdersPerLevel + tailSlot) * ORDER_FIELDS;
+
+            // Link previous tail to new order — even if tail is a tombstone (qty=0).
+            // Tombstones keep their chain position; walks skip over them.
+            // Only guard against self-referential cycle (tail slot == new slot).
+            if (tailSlot != slot) {
+                orders[tailOrderBase + 3] = slot; // Link previous tail to new order
+            }
+            levels[levelBase + 1] = slot;     // Update tail
+        }
+
+        levels[levelBase + 2] = orderCount + 1;
+        levels[levelBase + 3] += quantity; // Total quantity
+
+        // Store order location for O(1) cancel
+        orderLocations.put(orderId, packLocation(priceIdx, slot));
+
+        // Memory barrier - increment version AFTER all writes complete
+        version++;
+        return OrderRejectReason.NONE;
+    }
+
+    /**
+     * Add order from Order object. O(1)
+     *
+     * @return OrderRejectReason.NONE on success, otherwise the reject reason
+     */
+    public int addOrder(Order order) {
+        return addOrder(order.getId(), order.getUserId(), order.getPrice(), order.getRemainingQuantity());
+    }
+
+    /**
+     * Cancel order by ID. O(1)
+     */
+    public boolean cancelOrder(long orderId) {
+        long location = orderLocations.get(orderId);
+        if (location == EMPTY_LOCATION) return false;
+
+        int priceIdx = unpackPriceIdx(location);
+        int slot = unpackSlot(location);
+
+        // Verify this is the right order (handle hash collisions)
+        int orderBase = (priceIdx * maxOrdersPerLevel + slot) * ORDER_FIELDS;
+        if (orders[orderBase] != orderId) return false;
+
+        // Get order quantity for level total update
+        long quantity = orders[orderBase + 2];
+
+        // Mark as tombstone — keep next pointer intact for chain traversal.
+        // Do NOT return slot to free list here. The slot remains in the
+        // linked list chain as a tombstone. It will be freed lazily when
+        // the head advances past it, or when the level becomes empty.
+        orders[orderBase + 2] = 0; // Zero quantity = deleted/tombstone
+
+        // Update level metadata
+        int levelBase = priceIdx * LEVEL_FIELDS;
+        long orderCount = levels[levelBase + 2] - 1;
+        levels[levelBase + 2] = orderCount;
+        levels[levelBase + 3] -= quantity;
+
+        // Clear location
+        orderLocations.remove(orderId);
+
+        if (orderCount == 0) {
+            // All live orders gone — free all tombstone slots in the chain
+            freeAllSlotsAtLevel(priceIdx);
+            activeLevelCount--;
+            updateBestWorstPrice(priceIdx, false);
+        }
+
+        // Memory barrier
+        version++;
+        return true;
+    }
+
+    /**
+     * Reduce order quantity (after match). O(1)
+     *
+     * When an order is fully filled (newQty <= 0), we remove it directly
+     * instead of calling cancelOrder(), because cancelOrder() would read
+     * the already-updated (possibly negative) quantity and corrupt the
+     * level total by subtracting a negative value.
+     */
+    public void reduceOrderQuantity(long orderId, long reduceBy) {
+        long location = orderLocations.get(orderId);
+        if (location == EMPTY_LOCATION) return;
+
+        int priceIdx = unpackPriceIdx(location);
+        int slot = unpackSlot(location);
+
+        int orderBase = (priceIdx * maxOrdersPerLevel + slot) * ORDER_FIELDS;
+        if (orders[orderBase] != orderId) return;
+
+        long oldQty = orders[orderBase + 2];
+        long actualReduce = Math.min(reduceBy, oldQty); // Never reduce more than available
+        long newQty = oldQty - actualReduce;
+        orders[orderBase + 2] = newQty;
+
+        // Update level total — only subtract what we actually reduced
+        int levelBase = priceIdx * LEVEL_FIELDS;
+        levels[levelBase + 3] -= actualReduce;
+
+        // Memory barrier - increment version AFTER all writes complete
+        version++;
+
+        // If fully filled, mark as tombstone (same approach as cancelOrder).
+        // Slot will be freed lazily by head-advance or level-empty cleanup.
+        if (newQty <= 0) {
+            orders[orderBase + 2] = 0;
+
+            // Update level order count
+            long orderCount = levels[levelBase + 2] - 1;
+            levels[levelBase + 2] = orderCount;
+
+            // Clear location
+            orderLocations.remove(orderId);
+
+            if (orderCount == 0) {
+                freeAllSlotsAtLevel(priceIdx);
+                activeLevelCount--;
+                updateBestWorstPrice(priceIdx, false);
+            }
+
+            version++;
+        }
+    }
+
+    /**
+     * Get best price. O(1)
+     */
+    public long getBestPrice() {
+        return bestPriceIdx >= 0 ? indexToPrice(bestPriceIdx) : (ascending ? Long.MAX_VALUE : Long.MIN_VALUE);
+    }
+
+    /**
+     * Get best price index. O(1)
+     */
+    public int getBestPriceIndex() {
+        return bestPriceIdx;
+    }
+
+    /**
+     * Check if empty. O(1)
+     */
+    public boolean isEmpty() {
+        return activeLevelCount == 0;
+    }
+
+    /**
+     * Get order count at price level. O(1)
+     */
+    public int getOrderCount(int priceIdx) {
+        if (priceIdx < 0 || priceIdx >= maxPriceLevels) return 0;
+        return (int) levels[priceIdx * LEVEL_FIELDS + 2];
+    }
+
+    /**
+     * Get total quantity at price level. O(1)
+     */
+    public long getTotalQuantity(int priceIdx) {
+        if (priceIdx < 0 || priceIdx >= maxPriceLevels) return 0;
+        return levels[priceIdx * LEVEL_FIELDS + 3];
+    }
+
+    /**
+     * Get head order at price level for matching. O(1) amortized.
+     * Advances head pointer past tombstones, freeing their slots.
+     */
+    public long getHeadOrderId(int priceIdx) {
+        if (priceIdx < 0 || priceIdx >= maxPriceLevels) return -1;
+        int levelBase = priceIdx * LEVEL_FIELDS;
+        if (levels[levelBase + 2] == 0) return -1;
+
+        int headSlot = (int) levels[levelBase];
+        int orderBase = (priceIdx * maxOrdersPerLevel + headSlot) * ORDER_FIELDS;
+
+        // Advance head past tombstones (cancelled orders with qty=0), freeing their slots.
+        // This amortizes cleanup and restores O(1) for subsequent accesses.
+        int guard = maxOrdersPerLevel;
+        while (orders[orderBase + 2] == 0 && --guard > 0) {
+            // Free this tombstone slot
+            int slotStackBase = priceIdx * maxOrdersPerLevel;
+            freeSlots[slotStackBase + freeSlotCounts[priceIdx]++] = headSlot;
+
+            int nextSlot = (int) orders[orderBase + 3];
+            if (nextSlot < 0 || nextSlot >= maxOrdersPerLevel) return -1;
+
+            // Advance head pointer permanently
+            headSlot = nextSlot;
+            levels[levelBase] = headSlot;
+            orderBase = (priceIdx * maxOrdersPerLevel + headSlot) * ORDER_FIELDS;
+        }
+
+        return guard > 0 ? orders[orderBase] : -1;
+    }
+
+    /**
+     * Get head order remaining quantity. O(1) amortized.
+     */
+    public long getHeadOrderQuantity(int priceIdx) {
+        if (priceIdx < 0 || priceIdx >= maxPriceLevels) return 0;
+        int levelBase = priceIdx * LEVEL_FIELDS;
+        if (levels[levelBase + 2] == 0) return 0;
+
+        int headSlot = (int) levels[levelBase];
+        int orderBase = (priceIdx * maxOrdersPerLevel + headSlot) * ORDER_FIELDS;
+
+        // Advance head past tombstones, freeing their slots
+        int guard = maxOrdersPerLevel;
+        while (orders[orderBase + 2] == 0 && --guard > 0) {
+            int slotStackBase = priceIdx * maxOrdersPerLevel;
+            freeSlots[slotStackBase + freeSlotCounts[priceIdx]++] = headSlot;
+
+            int nextSlot = (int) orders[orderBase + 3];
+            if (nextSlot < 0 || nextSlot >= maxOrdersPerLevel) return 0;
+
+            headSlot = nextSlot;
+            levels[levelBase] = headSlot;
+            orderBase = (priceIdx * maxOrdersPerLevel + headSlot) * ORDER_FIELDS;
+        }
+
+        return guard > 0 ? orders[orderBase + 2] : 0;
+    }
+
+    /**
+     * Get head order user ID. O(1) amortized.
+     * Used for publishing trade executions with maker user info.
+     */
+    public long getHeadOrderUserId(int priceIdx) {
+        if (priceIdx < 0 || priceIdx >= maxPriceLevels) return 0;
+        int levelBase = priceIdx * LEVEL_FIELDS;
+        if (levels[levelBase + 2] == 0) return 0;
+
+        int headSlot = (int) levels[levelBase];
+        int orderBase = (priceIdx * maxOrdersPerLevel + headSlot) * ORDER_FIELDS;
+
+        // Advance head past tombstones, freeing their slots
+        int guard = maxOrdersPerLevel;
+        while (orders[orderBase + 2] == 0 && --guard > 0) {
+            int slotStackBase = priceIdx * maxOrdersPerLevel;
+            freeSlots[slotStackBase + freeSlotCounts[priceIdx]++] = headSlot;
+
+            int nextSlot = (int) orders[orderBase + 3];
+            if (nextSlot < 0 || nextSlot >= maxOrdersPerLevel) return 0;
+
+            headSlot = nextSlot;
+            levels[levelBase] = headSlot;
+            orderBase = (priceIdx * maxOrdersPerLevel + headSlot) * ORDER_FIELDS;
+        }
+
+        return guard > 0 ? orders[orderBase + 1] : 0;
+    }
+
+    /**
+     * Iterate to next price level. O(1) amortized with sparse levels.
+     */
+    public int nextPriceIndex(int currentIdx) {
+        if (ascending) {
+            for (int i = currentIdx + 1; i <= worstPriceIdx && i < maxPriceLevels; i++) {
+                if (levels[i * LEVEL_FIELDS + 2] > 0) return i;
+            }
+        } else {
+            for (int i = currentIdx - 1; i >= worstPriceIdx && i >= 0; i--) {
+                if (levels[i * LEVEL_FIELDS + 2] > 0) return i;
+            }
+        }
+        return -1;
+    }
+
+    /**
+     * Update best/worst price tracking after add/remove
+     */
+    private void updateBestWorstPrice(int changedIdx, boolean added) {
+        if (added) {
+            if (ascending) {
+                // Ask side: lower is better
+                if (bestPriceIdx < 0 || changedIdx < bestPriceIdx) {
+                    bestPriceIdx = changedIdx;
+                }
+                if (worstPriceIdx < 0 || changedIdx > worstPriceIdx) {
+                    worstPriceIdx = changedIdx;
+                }
+            } else {
+                // Bid side: higher is better
+                if (bestPriceIdx < 0 || changedIdx > bestPriceIdx) {
+                    bestPriceIdx = changedIdx;
+                }
+                if (worstPriceIdx < 0 || changedIdx < worstPriceIdx) {
+                    worstPriceIdx = changedIdx;
+                }
+            }
+        } else {
+            // Removed - need to find new best/worst if this was it
+            if (changedIdx == bestPriceIdx) {
+                bestPriceIdx = findNewBestPrice();
+            }
+            if (changedIdx == worstPriceIdx) {
+                worstPriceIdx = findNewWorstPrice();
+            }
+        }
+    }
+
+    private int findNewBestPrice() {
+        if (activeLevelCount == 0) return -1;
+
+        if (ascending) {
+            for (int i = 0; i < maxPriceLevels; i++) {
+                if (levels[i * LEVEL_FIELDS + 2] > 0) return i;
+            }
+        } else {
+            for (int i = maxPriceLevels - 1; i >= 0; i--) {
+                if (levels[i * LEVEL_FIELDS + 2] > 0) return i;
+            }
+        }
+        return -1;
+    }
+
+    private int findNewWorstPrice() {
+        if (activeLevelCount == 0) return -1;
+
+        if (ascending) {
+            for (int i = maxPriceLevels - 1; i >= 0; i--) {
+                if (levels[i * LEVEL_FIELDS + 2] > 0) return i;
+            }
+        } else {
+            for (int i = 0; i < maxPriceLevels; i++) {
+                if (levels[i * LEVEL_FIELDS + 2] > 0) return i;
+            }
+        }
+        return -1;
+    }
+
+    /**
+     * Free all slots at a price level by walking the linked list chain.
+     * Called when orderCount drops to 0 (all live orders cancelled/filled).
+     * Tombstone slots that were skipped by head-advance are already freed;
+     * this method frees the remaining tombstones reachable from the current head.
+     */
+    private void freeAllSlotsAtLevel(int priceIdx) {
+        int levelBase = priceIdx * LEVEL_FIELDS;
+        int currentSlot = (int) levels[levelBase]; // head
+        int slotStackBase = priceIdx * maxOrdersPerLevel;
+        int guard = maxOrdersPerLevel;
+        while (currentSlot >= 0 && currentSlot < maxOrdersPerLevel && --guard > 0) {
+            int orderBase = (priceIdx * maxOrdersPerLevel + currentSlot) * ORDER_FIELDS;
+            int nextSlot = (int) orders[orderBase + 3];
+            freeSlots[slotStackBase + freeSlotCounts[priceIdx]++] = currentSlot;
+            currentSlot = nextSlot;
+        }
+    }
+
+    /**
+     * Reclaim tombstoned slots at a level in place, preserving live-order FIFO order (match#94).
+     *
+     * <p>Walks the level's chain exactly once (≤ maxOrdersPerLevel nodes): every tombstone
+     * (qty == 0) is unlinked and its slot pushed back onto the free stack, while live orders are
+     * re-stitched into a compact chain in their original order. Head and tail are rebuilt to point
+     * at the first/last surviving live slot. Slots are NOT moved, so {@code orderLocations} entries
+     * for the surviving orders stay valid.</p>
+     *
+     * <p>Called only from {@link #addOrder} when the level's free stack is exhausted. Because a level
+     * whose live count reaches 0 is fully freed via {@link #freeAllSlotsAtLevel}, a full free stack
+     * implies at least one live order pins the level, so the compacted chain is non-empty.</p>
+     *
+     * <p>Every tombstone has already had its {@code orderLocations} entry removed (in
+     * {@link #cancelOrder}/{@link #reduceOrderQuantity}), so freeing its slot cannot orphan a
+     * location. After compaction the chain holds no tombstones, so the lazy head-advance in
+     * getHeadOrder* frees nothing further — no double-free.</p>
+     */
+    private void compactLevel(int priceIdx) {
+        int levelBase = priceIdx * LEVEL_FIELDS;
+        int slotStackBase = priceIdx * maxOrdersPerLevel;
+
+        int currentSlot = (int) levels[levelBase]; // head
+        int newHead = -1;
+        int newTail = -1;
+
+        // +1 guard: a fully-occupied level has exactly maxOrdersPerLevel nodes to visit.
+        int guard = maxOrdersPerLevel + 1;
+        while (currentSlot >= 0 && currentSlot < maxOrdersPerLevel && --guard > 0) {
+            int orderBase = (priceIdx * maxOrdersPerLevel + currentSlot) * ORDER_FIELDS;
+            int nextSlot = (int) orders[orderBase + 3];
+
+            if (orders[orderBase + 2] == 0) {
+                // Tombstone — unlink and reclaim the slot.
+                freeSlots[slotStackBase + freeSlotCounts[priceIdx]++] = currentSlot;
+            } else {
+                // Live order — keep it, appending to the compacted chain in FIFO order.
+                if (newHead < 0) {
+                    newHead = currentSlot;
+                } else {
+                    int newTailBase = (priceIdx * maxOrdersPerLevel + newTail) * ORDER_FIELDS;
+                    orders[newTailBase + 3] = currentSlot;
+                }
+                newTail = currentSlot;
+            }
+
+            currentSlot = nextSlot;
+        }
+
+        // Terminate the compacted chain.
+        if (newTail >= 0) {
+            int newTailBase = (priceIdx * maxOrdersPerLevel + newTail) * ORDER_FIELDS;
+            orders[newTailBase + 3] = -1;
+        }
+
+        levels[levelBase] = newHead;     // head
+        levels[levelBase + 1] = newTail; // tail
+    }
+
+    private long packLocation(int priceIdx, int slot) {
+        return ((long) priceIdx << 32) | (slot & 0xFFFFFFFFL);
+    }
+
+    private int unpackPriceIdx(long location) {
+        return (int) (location >>> 32);
+    }
+
+    private int unpackSlot(long location) {
+        return (int) location;
+    }
+
+    public int getMaxPriceLevels() {
+        return maxPriceLevels;
+    }
+
+    public int getActiveLevelCount() {
+        return activeLevelCount;
+    }
+
+    public boolean isAscending() {
+        return ascending;
+    }
+
+    public long getTickSize() {
+        return tickSize;
+    }
+
+    public long getBasePrice() {
+        return basePrice;
+    }
+
+    /**
+     * Get current version for memory barrier.
+     * Reading this establishes happens-before with last modification.
+     */
+    public long getVersion() {
+        return version;
+    }
+
+    // ==================== Snapshot Support ====================
+
+    /**
+     * Get all active orders for snapshot serialization.
+     * Returns array of [orderId, userId, price, quantity] tuples.
+     * This allocates but is only called during snapshots, not hot path.
+     */
+    public long[] getActiveOrders() {
+        // Count active orders first
+        int count = 0;
+        for (int priceIdx = 0; priceIdx < maxPriceLevels; priceIdx++) {
+            count += getOrderCount(priceIdx);
+        }
+
+        if (count == 0) return new long[0];
+
+        long[] result = new long[count * 4]; // 4 fields per order
+        int resultIdx = 0;
+
+        for (int priceIdx = 0; priceIdx < maxPriceLevels; priceIdx++) {
+            int levelBase = priceIdx * LEVEL_FIELDS;
+            if (levels[levelBase + 2] == 0) continue; // No orders at this level
+
+            long price = indexToPrice(priceIdx);
+            int headSlot = (int) levels[levelBase];
+
+            // Walk the linked list at this level (with cycle guard)
+            int currentSlot = headSlot;
+            int guard = maxOrdersPerLevel;
+            while (currentSlot >= 0 && currentSlot < maxOrdersPerLevel && --guard > 0) {
+                int orderBase = (priceIdx * maxOrdersPerLevel + currentSlot) * ORDER_FIELDS;
+                long qty = orders[orderBase + 2];
+                if (qty > 0) { // Active order
+                    result[resultIdx++] = orders[orderBase];     // orderId
+                    result[resultIdx++] = orders[orderBase + 1]; // userId
+                    result[resultIdx++] = price;
+                    result[resultIdx++] = qty;
+                }
+                currentSlot = (int) orders[orderBase + 3];
+            }
+        }
+
+        // Trim to actual size
+        if (resultIdx < result.length) {
+            long[] trimmed = new long[resultIdx];
+            System.arraycopy(result, 0, trimmed, 0, resultIdx);
+            return trimmed;
+        }
+        return result;
+    }
+
+    /**
+     * Clear all orders (for snapshot restore)
+     */
+    public void clear() {
+        // Reset all level metadata
+        for (int i = 0; i < levels.length; i++) {
+            levels[i] = 0;
+        }
+
+        // Reset free slot stacks
+        for (int priceIdx = 0; priceIdx < maxPriceLevels; priceIdx++) {
+            int baseSlotIdx = priceIdx * maxOrdersPerLevel;
+            for (int slot = 0; slot < maxOrdersPerLevel; slot++) {
+                freeSlots[baseSlotIdx + slot] = slot;
+            }
+            freeSlotCounts[priceIdx] = maxOrdersPerLevel;
+        }
+
+        // Clear order locations
+        orderLocations.clear();
+
+        // Reset best/worst tracking
+        bestPriceIdx = -1;
+        worstPriceIdx = -1;
+        activeLevelCount = 0;
+    }
+}

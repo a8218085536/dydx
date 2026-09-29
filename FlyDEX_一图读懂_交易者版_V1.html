@@ -1,0 +1,213 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>一图读懂 FlyDEX 飞蝶</title>
+<style>
+  :root{--g1:#00E63A;--g2:#00B22C;--green:#00D632;--dgreen:#06351A;--deep:#07130B;--mint:#EAFBEE;--ink:#0A0F0B;--line:#E6EEE8;--gray:#7d8a80;--red:#F6465D;--gold:#F4C84A}
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{background:#E6EAE7;font-family:"Helvetica Neue",Inter,Arial,"PingFang SC","Microsoft YaHei",sans-serif;color:var(--ink);-webkit-font-smoothing:antialiased;display:flex;justify-content:center;padding:30px 0}
+  .poster{width:860px;background:#fff;overflow:hidden;border-radius:20px;box-shadow:0 24px 70px rgba(6,53,26,.25)}
+
+  .hero{background:linear-gradient(160deg,#0B1F10 0%,#07130B 70%);padding:44px 56px 0;position:relative;overflow:hidden}
+  .hero::before{content:"";position:absolute;width:480px;height:480px;border-radius:50%;background:rgba(0,214,50,.13);top:-260px;right:-140px}
+  .hero .in{position:relative;z-index:2;text-align:center}
+  .lockup{display:flex;align-items:center;justify-content:center;gap:14px}
+  .lockup .en{font-size:30px;font-weight:800;color:#fff}
+  .lockup .en b{color:var(--green)}
+  .lockup .cn{font-size:15px;font-weight:800;letter-spacing:.34em;color:#7fae8b}
+  .hero h1{font-size:48px;font-weight:900;color:#fff;margin-top:24px}
+  .hero h1 b{color:var(--green)}
+  .hero .sub{display:inline-block;margin-top:16px;background:rgba(0,214,50,.14);border:1px solid rgba(0,214,50,.4);color:#7CFA9B;font-weight:800;font-size:13.5px;padding:10px 24px;border-radius:999px}
+  .hero .wave{position:relative;z-index:2;margin-top:36px;display:block}
+
+  .sect{padding:36px 56px 4px}
+  .kicker{display:flex;align-items:center;gap:10px;margin-bottom:16px}
+  .kicker .dot{width:10px;height:24px;border-radius:6px;background:linear-gradient(180deg,var(--g1),var(--g2))}
+  .kicker h2{font-size:23px;font-weight:900}
+  .kicker .tag{margin-left:auto;font-size:11.5px;font-weight:800;color:#00A028;background:var(--mint);padding:6px 14px;border-radius:999px}
+
+  .tbl{border-radius:20px;overflow:hidden;border:1px solid var(--line)}
+  table{width:100%;border-collapse:collapse;font-size:14px}
+  th{background:var(--deep);color:#9fdcac;font-weight:800;padding:12px;text-align:center;font-size:13px}
+  td{padding:10.5px;text-align:center;font-weight:700;color:#2c3a30;border-top:1px solid var(--line)}
+  tr:nth-child(even) td{background:#F7FAF7}
+  tr.hl td{background:var(--mint);color:#00691a;font-weight:900}
+  td.gold{color:#7a5d00;background:#FFF9E3;font-weight:900}
+  td.grn{color:#00A028;font-weight:900}
+  .tnote{font-size:11.5px;color:var(--gray);margin-top:9px;font-weight:600}
+
+  /* rebate flow */
+  .rflow{background:var(--deep);border-radius:24px;padding:26px 30px;color:#fff;position:relative;overflow:hidden}
+  .rflow::before{content:"";position:absolute;width:260px;height:260px;border-radius:50%;background:rgba(0,214,50,.1);top:-140px;right:-80px}
+  .rflow .row{display:flex;align-items:center;justify-content:space-between;gap:6px;text-align:center;position:relative;z-index:2}
+  .rflow .cell{flex:1}
+  .rflow .cell .t{font-size:15px;font-weight:900;color:#fff}
+  .rflow .cell .d{font-size:11.5px;color:#8fae97;margin-top:5px;font-weight:700;line-height:1.5}
+  .rflow .arr{color:#3f5747;font-weight:800;font-size:20px}
+  .rflow .line{border-top:1px solid #1b2a20;margin:16px 0 12px}
+  .rflow .cap{font-size:13.5px;color:#cfe6d4;text-align:center;font-weight:700;position:relative;z-index:2}
+  .rflow .cap b{color:var(--green)}
+
+  .accap{margin-top:12px;background:linear-gradient(150deg,var(--g1),var(--g2));border-radius:14px;padding:14px 18px;font-size:14.5px;font-weight:900;color:#04230c;text-align:center}
+
+  /* pro grid */
+  .pro4{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+  .pcard{border-radius:18px;padding:18px 20px;background:#F7FAF7;border:1px solid var(--line)}
+  .pcard h4{font-size:14.5px;font-weight:900;margin-bottom:6px}
+  .pcard h4 span{color:#00A028}
+  .pcard p{font-size:12.3px;color:#4e5c52;line-height:1.7;font-weight:500}
+
+  /* roadmap */
+  .rmap{display:flex;gap:12px}
+  .rbox{flex:1;border-radius:18px;padding:18px 16px;background:#F7FAF7;border:1px solid var(--line);text-align:center}
+  .rbox.on{background:linear-gradient(150deg,var(--g1),var(--g2));border:none;color:#04230c}
+  .rbox .ph{font-size:11.5px;font-weight:800;letter-spacing:.1em;color:var(--gray)}
+  .rbox.on .ph{color:#0a5223}
+  .rbox h5{font-size:14.5px;font-weight:900;margin-top:6px}
+  .rbox p{font-size:11.5px;margin-top:6px;font-weight:600;line-height:1.6;color:#4e6355}
+  .rbox.on p{color:#0d3d1c}
+
+  .manifesto{margin:36px 56px 0;background:linear-gradient(165deg,var(--mint),#F2FCF5);border-radius:22px;padding:24px 30px;text-align:center;font-size:15.5px;line-height:2;color:#173822;font-weight:700}
+  .manifesto b{color:#00A028}
+  .cta{display:flex;align-items:center;gap:16px;margin:28px 56px 0;justify-content:center}
+  .qr{width:92px;height:92px;border-radius:18px;background:#F3F7F4;border:1.5px solid var(--line);display:grid;place-items:center;font-size:12px;color:#6d7f72;text-align:center;line-height:1.5;font-weight:700}
+  .foot{margin-top:32px;padding:22px 56px 28px;background:var(--deep);font-size:10.5px;color:#7e9484;line-height:1.9}
+  .foot b{color:#a9c9b1}
+</style>
+</head>
+<body>
+<div class="poster">
+
+  <!-- HERO -->
+  <div class="hero">
+    <div class="in">
+      <div class="lockup">
+        <svg viewBox="0 0 200 170" width="56"><rect x="8" y="30" width="76" height="20" rx="10" fill="#00D632"/><rect x="24" y="56" width="60" height="20" rx="10" fill="#00D632" opacity=".8"/><rect x="38" y="82" width="46" height="20" rx="10" fill="#00D632" opacity=".6"/><rect x="52" y="108" width="32" height="20" rx="10" fill="#00D632" opacity=".4"/><rect x="116" y="30" width="76" height="20" rx="10" fill="#fff"/><rect x="116" y="56" width="60" height="20" rx="10" fill="#fff" opacity=".8"/><rect x="116" y="82" width="46" height="20" rx="10" fill="#fff" opacity=".6"/><rect x="116" y="108" width="32" height="20" rx="10" fill="#fff" opacity=".4"/><rect x="94" y="34" width="12" height="100" rx="6" fill="#00D632"/><circle cx="100" cy="24" r="9" fill="#00D632"/><path d="M93 17 Q84 6 76 4 M107 17 Q116 6 124 4" stroke="#00D632" stroke-width="5" fill="none" stroke-linecap="round"/><path d="M100 134 L100 152" stroke="#00D632" stroke-width="8" stroke-linecap="round"/></svg>
+        <div class="en">Fly<b>DEX</b></div>
+        <div class="cn">飞蝶</div>
+      </div>
+      <h1>一图读懂 <b>FlyDEX 飞蝶</b></h1>
+      <div class="sub">费率 · 返佣 · 团队等级 · 合约 —— 交易者与 KOL 全规则</div>
+      <svg class="wave" width="100%" height="40" viewBox="0 0 748 40" preserveAspectRatio="none"><path d="M0 40 L0 26 Q187 0 374 19 Q561 38 748 12 L748 40 Z" fill="#ffffff"/></svg>
+    </div>
+  </div>
+
+  <!-- 1 费率 -->
+  <div class="sect">
+    <div class="kicker"><div class="dot"></div><h2>费率表：挂单是赚的</h2><span class="tag">现货与合约统一适用</span></div>
+    <div class="tbl">
+      <table>
+        <tr><th>币种类别</th><th>Maker 挂单</th><th>Taker 吃单</th><th>说明</th></tr>
+        <tr><td>主流币种<br>BTC · ETH · DOGE · SOL · BNB · HYPE</td><td class="grn">-0.03%（返佣）</td><td>0.15%</td><td>负 Maker 全场最激进<br>做市 / 网格主场</td></tr>
+        <tr><td>主推币种<br>NECO · EDEX</td><td class="grn">-0.1%（返佣）</td><td>0.45%</td><td>返佣与奖励全额档<br>高波动高活跃</td></tr>
+      </table>
+    </div>
+    <div class="tnote">对比（2026.08 公开费率）：Hyperliquid Maker +0.015% / Taker 0.045%；Aster Maker 0% / Taker 0.04%。EDEX 是唯一给主流币挂单负费率的订单簿 DEX。</div>
+  </div>
+
+  <!-- 2 返佣机制 -->
+  <div class="sect">
+    <div class="kicker"><div class="dot"></div><h2>返佣怎么算、怎么发</h2><span class="tag">基数 = 手续费净额</span></div>
+    <div class="rflow">
+      <div class="row">
+        <div class="cell"><div class="t">伞下交易产生手续费</div><div class="d">Taker 扣除 Maker 返佣后的净额</div></div>
+        <div class="arr">→</div>
+        <div class="cell"><div class="t">按团队等级计提</div><div class="d">30% 起步 · 最高 85%</div></div>
+        <div class="arr">→</div>
+        <div class="cell"><div class="t">协议市场购币</div><div class="d">用实收手续费买入 EDEX</div></div>
+        <div class="arr">→</div>
+        <div class="cell"><div class="t">EDEX 结算到账</div><div class="d">你的返佣本身就是买盘</div></div>
+      </div>
+      <div class="line"></div>
+      <div class="cap">主推币与主流币返佣<b>按等级表对应比例</b>执行 · 自对倒与关联刷量<b>零返佣</b></div>
+    </div>
+  </div>
+
+  <!-- 3 团队等级全表 -->
+  <div class="sect">
+    <div class="kicker"><div class="dot"></div><h2>团队等级全表</h2><span class="tag">每日结算 · 能升能降</span></div>
+    <div class="tbl">
+      <table>
+        <tr><th>等级</th><th>达成条件</th><th>级差奖励</th><th>主推币返佣</th><th>主流币返佣</th></tr>
+        <tr><td>普通</td><td>—</td><td>—</td><td>30%</td><td>9%</td></tr>
+        <tr><td>N0</td><td>业绩 5,000 U</td><td>2%</td><td>40%</td><td>12%</td></tr>
+        <tr><td>N1</td><td>业绩 10,000 U</td><td>4%</td><td>45%</td><td>13.5%</td></tr>
+        <tr><td>N2</td><td>业绩 50,000 U</td><td>8%</td><td>50%</td><td>15%</td></tr>
+        <tr><td>N3</td><td>业绩 200,000 U</td><td>12%</td><td>55%</td><td>16.5%</td></tr>
+        <tr><td>N4</td><td>业绩 600,000 U</td><td>16%</td><td>60%</td><td>18%</td></tr>
+        <tr><td>N5</td><td>业绩 1,800,000 U</td><td>20%</td><td>65%</td><td>21%</td></tr>
+        <tr class="hl"><td>N6</td><td>业绩 5,000,000 U</td><td>24%</td><td>70%</td><td>24%</td></tr>
+        <tr><td class="gold">S1</td><td class="gold">业绩 1,200 万 U + 质押 10,000 EDEX</td><td class="gold">30%</td><td class="gold">75%</td><td class="gold">28%</td></tr>
+        <tr><td class="gold">S2</td><td class="gold">业绩 3,000 万 U + 质押 50,000 EDEX</td><td class="gold">35%</td><td class="gold">80%</td><td class="gold">32%</td></tr>
+        <tr><td class="gold">S3</td><td class="gold">业绩 6,000 万 U + 质押 200,000 EDEX</td><td class="gold">40%</td><td class="gold">85%</td><td class="gold">36%</td></tr>
+      </table>
+    </div>
+    <div class="tnote">直推奖励：伞下每日铸造量的 10%（永久）· 平级奖 5% · 级差按差额制计提于伞下每日铸造量。团队业绩 = 团队流动性在管存量 + 团队累计手续费净额。S 级需业绩与质押双达标，质押锁定、降级解锁。</div>
+  </div>
+
+  <!-- 4 交易加速 -->
+  <div class="sect">
+    <div class="kicker"><div class="dot"></div><h2>交易还能加速铸币</h2><span class="tag">同时参与流动性铸币计划时</span></div>
+    <div class="pro4">
+      <div class="pcard"><h4>⚡ 上月手续费 ≥ 1,000 U <span>→ 铸造 ×1.2</span></h4><p>你的流动性铸币额度，铸造速度随交易提档。</p></div>
+      <div class="pcard"><h4>⚡ 上月手续费 ≥ 5,000 U <span>→ 铸造 ×1.5</span></h4><p>叠加团队加速（N1~N6 ×1.05~1.25），相乘计算。</p></div>
+      <div class="pcard"><h4>⚡ 上月手续费 ≥ 20,000 U <span>→ 铸造 ×2.0</span></h4><p>综合封顶 2.5 倍——最高日释放 1%，铸完额度最快只要 100 天。</p></div>
+      <div class="pcard"><h4>🦋 一人一蝶 <span>专属 Agent 做市</span></h4><p>交易之外，认购流动性即获得专属 AI Agent 做市子账户，按日获取铸币收益。</p></div>
+    </div>
+    <div class="accap">交易付的手续费，既攒返佣等级、又加速你的铸币——一份行为，两份权益</div>
+  </div>
+
+  <!-- 5 专业架构 -->
+  <div class="sect">
+    <div class="kicker"><div class="dot"></div><h2>底层：你的对手盘跑不掉，你的钱拿得回</h2></div>
+    <div class="pro4">
+      <div class="pcard"><h4>结算分离</h4><p>资产托管 NECO Chain 主链，排序器只撮合不碰钱；宕机可走主链仲裁强制出金。</p></div>
+      <div class="pcard"><h4>多源预言机</h4><p>主流币 Pyth / Chainlink 聚合，偏差超阈值自动暂停清算；主推币以 SWAP 底池+订单簿联合 TWAP 定价。</p></div>
+      <div class="pcard"><h4>清算与保险</h4><p>渐进式部分清算优先，清算罚金入保险基金，极端行情 ADL；保险基金目标为未平仓量 2%–5%。</p></div>
+      <div class="pcard"><h4>审计与透明</h4><p>两家独立审计 + 最高 50 万 USDC Bug Bounty；铸造、销毁、承接覆盖率、底池规模每月链上公示。</p></div>
+    </div>
+  </div>
+
+  <!-- 5b 技术与运营细节 -->
+  <div class="sect">
+    <div class="kicker"><div class="dot"></div><h2>交易者最关心的细节</h2><span class="tag">性能 · 出入金 · 订单 · 风控 · API</span></div>
+    <div class="pro4">
+      <div class="pcard"><h4>⚙️ 性能指标</h4><p>主网上线目标 5,000+ TPS、订单延迟 &lt; 50ms、出块 &lt; 1 秒；优化后目标 20,000+ TPS。测试网阶段发布完整基准报告。</p></div>
+      <div class="pcard"><h4>💸 出入金</h4><p>入金约 10–30 秒到账；出金正常 1–5 分钟；排序器故障时可经 NECO Chain 主链仲裁强制出金，资产控制权始终在主链。</p></div>
+      <div class="pcard"><h4>📋 订单类型</h4><p>限价 / 市价 / 止损 / 止盈 / Post-Only（只挂单吃负费率）/ IOC / FOK；价格时间优先撮合，专业盘口深度图。</p></div>
+      <div class="pcard"><h4>🧮 资金费率与清算</h4><p>永续资金费率每 8 小时结算；渐进式部分清算优先，清算罚金入保险基金（目标未平仓量 2%–5%），极端行情才触发 ADL。</p></div>
+      <div class="pcard"><h4>🔌 API 与做市</h4><p>REST + WebSocket 全量行情与交易接口，做市商专属通道与费率计划；支持自建策略与第三方托管 Agent 接入。</p></div>
+      <div class="pcard"><h4>📊 月度披露</h4><p>铸造量、承接覆盖率、回购销毁量、底池规模、保险基金与平准基金余额每月链上公示，全部可验证。</p></div>
+    </div>
+  </div>
+
+  <!-- 6 上线节奏 -->
+  <div class="sect">
+    <div class="kicker"><div class="dot"></div><h2>市场开放节奏</h2></div>
+    <div class="rmap">
+      <div class="rbox on"><div class="ph">PHASE 1 · 创世</div><h5>主推币现货 + 双合约</h5><p>SWAP + 订单簿现货，U 本位/币本位合约<br>流动性铸币计划首期开放</p></div>
+      <div class="rbox"><div class="ph">PHASE 2 · 增长</div><h5>主流币永续</h5><p>BTC/ETH 等 U 本位永续<br>最高 100 倍</p></div>
+      <div class="rbox"><div class="ph">PHASE 3 · 深化</div><h5>生态与大宗商品</h5><p>JoyCoin、wHOM 等 NECO Chain<br>商业生态及大宗商品代币</p></div>
+    </div>
+  </div>
+
+  <!-- manifesto + CTA -->
+  <div class="manifesto">
+    一只蝶的振翅微不足道。亿万只蝶一起振翅，就是海。<br>
+    海有多深，价格就有多公平——<b>你的每一张挂单，都是这片海的一寸深。</b>
+  </div>
+  <div class="cta">
+    <div style="text-align:center"><img src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAASIAAAEiCAIAAADS3EjhAAAEM0lEQVR42u3dUW5CIRRF0dIw/ynbGRhTvJwLb63/1ie6A4kExuv1+gEq/RoCkBnIDJAZyAxkBsgMZAbIDGQGMgNkBjIDmQEyA5kBMgOZgcyAT8yVPx5jXDYc709GWXm/dWeu1D3V+/9cN1YnfjfMZmDRCDIDZAYyA5kZApAZyAyQGcTNun/d866Z1E6O1Oum/vZp3w2zGVg0gswAmYHMQGaGAGQGMgNkBnEz9cJ1v7indhjUnZyROpOj50ie+N0wm4HMQGaAzEBmIDNAZiAzQGawwTQEn1vZnbCyk6Pn++35zGYzkBkgM5AZIDOQGcgMkBnIDB7LLpBNVk7sSN3qUncmh9kMkBnIDJAZyAxkBsgMZAYyA74utgvkaSdJ1O3zOPHOl6d9N8xmIDOQGSAzkBnIDJAZyAyQGWxQuAvkaSdJrJz2sTKSda/ru2E2A5kBMgOZgcwAmYHMQGaAzOAg42lnciwNVtmpG3UnhaTeEWYzkBnIDJAZyAxkBsgMZAbIDDYbdXeRpPYupM7GSO2KuO+kkNSnUPd9NpuBRSPIDJAZyAxkBsgMZAbIDDZoehZIaq9Gz9M+eu7VqNtvkfp861owm4FFI8gMkBnIDGQGyAxkBsgMNhj33TZy370tde93RWqsTrzFxmwGMgOZATIDmYHMAJmBzACZwQbjvntb7ttB0nMke96t03OPiNkMLBpBZoDMQGYgM0BmIDNAZrDBXPnjuvMeeu5NqXPiDTh1T5Uaq7rvhtkMLBpBZoDMQGYgM0BmIDNAZrDBTL1wajeG/SX931HqNhlngYBFIyAzkBnIDJAZyAxkBsgMjra0C6TutI+e95ikdnKcKHViR89P0GwGMgOZATIDmYHMAJmBzACZwQaj586GnqdQrDjxBIvU57sykj33iJjNwKIRZAbIDGQGMgNkBjIDZAYbLJ0FUrdnoudT1e3k6Om+z9dZIGDRCMgMZAYyA2QGMgNkBjKDi8VuhKmTOimk5/04qWfuOc5mM7BoBGQGMgOZATIDmQEyA5nBxS48C2RFaofByr6Huj0iqXdkNgNkBjIDmQEyA5kBMgOZgcyAfxh1t5z0/KW/5zPX3XJSt78kdRbICjfCgEUjIDOQGcgMkBnIDJAZyAwuNlMvfOIv/SeefWI0zGYgM0BmIDNAZiAzkBkgM5AZPMQ0BJ9L7aiouxHmvnF+Pxp1Z66YzcCiEWQGyAxkBjIzBCAzkBkgM4izC+Rr6u5PSe1d6PlUJ95xYzYDi0aQGSAzkBnIDJAZyAyQGWwQ2wVS94v7fXqeQZLa15L6z2YzsGgEmQEyA5kBMgOZgcwAmUFzo+dv+Sk9T5JIvW7dp9/zhJK6ZzabgUUjyAyQGcgMZAbIDGQGyAw2GM7kALMZyAyQGcgMZAbIDGQGyAxkBjIDZAYyA5kBMgOZATIDmYHMAJlBC38Wg3xOdOHaZAAAAABJRU5ErkJggg==" style="width:96px;display:block;margin:0 auto;border-radius:12px"><div style="font-size:12px;font-weight:800;color:#5b6b5e;margin-top:6px">TG 社群 @FlyDEXGlobal</div></div>
+    <div style="text-align:center"><img src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAASIAAAEiCAIAAADS3EjhAAAEP0lEQVR42u3dYWrDMAyA0Xnk/lfubhAKmizJfu9/19bNhwMTzvp8Pj9Apl9LADIDmQEyA5mBzACZgcwAmYHMQGaAzEBmIDNAZiAzQGYgM5AZ8I0n8uK11mHL8X4ySt73nfi+VZ+557VhNwM3jSAzQGYgM5CZJQCZgcwAmUG5J+9P93zWTGQ6IW9mouevkPeZz7s27GbgphFkBsgMZAYyswQgM5AZIDMo91S9cdX5Fnki71s1m9JzJc+7NuxmIDOQGSAzkBnIDJAZyAyQGWzwWILvnfeUk8j37Xmeh90MZAbIDGQGyAxkBjIDZAYyg2uZAtmk50khee+L3QxkBjIDZAYyA5kBMgOZATKDzcqmQG47SSJvomLiM19uuzbsZiAzkBkgM5AZyAyQGcgMkBlskDgFcttJEu+zC5Gnq+S9tspt14bdDGQGMgNkBjIDmQEyA5kBMoMN1m1ncoQWKzCNMfEbvXPl2M1AZiAzQGYgM0BmIDOQGSAzaCU0BVI1FTHxbIyqdXYiS4fr2W4GbhpBZoDMQGYgM0BmIDNAZrBB6IkwE+cPep5gkbdWeb9R3rxF1TrnXRt2M3DTCDIDZAYyA5kBMgOZATKDDUJTIBPPqMj7zHkzBOc9ayZvgqTnU3vsZiAzkBkgM5AZyAyQGcgMkBlscOATYd71fE5N2c/fco6n6pQRZ4GAm0ZAZiAzkBkgM5AZyAyQGYy2qqYTqs6KeHfe5Ere+972NJnIZ7abgZtGkBkgM5AZyAyQGcgMkBlsUHYWSM//5U/8VLdNzEw8vcZuBm4aQWaAzEBmIDNAZiAzQGawwZr4pJI8Pc8CyfvMPU8Kmfj72s3ATSPIDJAZyAxkZglAZiAzQGZQbuQUSN7JGT2fctLzN8r7fSPr3PN0E7sZuGkEmQEyA5mBzACZgcwAmcEGT+TFPf/jHvnMeRMGPedaJp7nMfGqs5uBzEBmgMxAZiAzQGYgM0BmsME675yJxMUaOH+Q932rnp4zcSXtZiAzkBkgM5AZyAyQGcgMkBlsUHYWSE+3zcTk/YK3PePGbgYyA5kBMgOZgcwsAcgMZAbIDMo9eX+653/6q87zqHqqS+Qb9Tz7pGr2KPKN7GbgphFkBsgMZAYyA2QGMgNkBhs8VW+c97/8nvMHeXMePedasJuBzEBmgMxAZiAzQGYgM0BmsNljCb438SyQ99f2nOQ4bzbFbgYyA5kBMgOZgcwAmYHMAJnBBqZA/k1k/qDqtVXzFuc9W8duBm4aQWaAzEBmIDNLADIDmQEyg3JlUyB5/3Hvqeq0j7zX9jyxw1kg4KYRkBnIDJAZyAxkBsgMZAbXSpwC6fn/+J7fKDKrkfe+eauRNwOUd6pK5DPbzcBNI8gMkBnIDGQGyAxkBsgMNli3nckBdjOQGSAzkBnIDJAZyAyQGcgMZAbIDGQGMgNkBjIDZAYyA5kBMoOm/gA9OnNdgyILqgAAAABJRU5ErkJggg==" style="width:96px;display:block;margin:0 auto;border-radius:12px"><div style="font-size:12px;font-weight:800;color:#5b6b5e;margin-top:6px">TG 客服 @FlyDEX888</div></div>
+    <div style="text-align:center"><img src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAASIAAAEiCAIAAADS3EjhAAAEMklEQVR42u3dUW7jMAxAwarQ/a+c3sBIwVAklZn/bWI7DzKwhLRer9cPkOnXLQCZgcwAmYHMQGaAzEBmgMxAZiAzQGYgM5AZIDOQGSAzkBnIDHjHjvzjtdZlt+N5Z5Tn683bVSXyuXnPqOpze/42rGbgpRFkBsgMZAYycwtAZiAzQGZQbuf96Z5nzUSmE/JmRCLfquqK/DasZuClEWQGyAxkBsgMZAYyA2QGreyqD544YVC1F0jkep+/c88dO+6bPrGagcxAZoDMQGYgM0BmIDNAZnDAdgve5wwUrGYgM5AZIDOQGSAzkBnIDJAZtGUK5GOqZibyToTBagYyA2QGMgOZATIDmYHMAJnBIGVTIBPnD/JOhIn85ftOwLlvNsVqBjIDmQEyA5mBzACZgcwAmcEBiVMg952Qknc3ImfN5P1bvw2rGcgMkBnIDGQGyAxkBjIDZAaDLGeCfOxWpk02VO0ygtUMZAbIDGQGMgNkBjIDmQEyg0FW1YRB1XRCZFajaseOnnrOpvT8TVrNwEsjyAyQGcgMZAbIDGQGyAwO2D2/VtW+Gs+fO3G3j/ue4MRpG6sZyAxkBsgMZAYyA2QGMgNkBgesnvMH901F5F1v6PGn7YwS+dy8SQ57gYCXRkBmIDOQGSAzkBkgM5AZXKxsL5CquYeqs2aq9qious8Tf1d598pqBl4aQWaAzEBmIDNAZiAzQGZwQOIUSM+5h6rdL77tXk2ca7EXCHhpBGQGMgOZATIDmYHMAJnBaKEpkKp9F6rOBInImzCYeDJLlarvbDUDmYHMAJmBzEBmgMxAZoDM4IDQFMh9+z1UXW/Pp9Bz35SJM0BWM/DSCDIDZAYyA5kBMgOZATKDA8r2AqkSmQO4b7KhakeWnvNDec/XagZeGkFmgMxAZiAzQGYgM0BmcMCqmgPoKW+vCHtjnHlGkXtlCgS8NAIyA5mBzACZgcxAZoDMYLSv2wskT89dRp7dN9fS8xlZzcBLI8gMkBnIDGQGyAxkBsgMDghNgXzbXiCRu5E3f9BzGqPn1IvVDGQGyAxkBjIDZAYyA2QGMoOL7bw/3fN/+qt2v8ibisibPvm2p+9EGPDSCMgMZAYyA2QGMgOZATKD0XbVB983f9BzGmPiE+x5RU6EAS+NIDNAZiAzQGYgM5AZIDNobrsFn5J35kvVDhZV3yrvJJrI9VrNwEsjyAyQGcgMkBnIDGQGyAyaMwXyDz13v8ibe8i73rw5j8gV2QsEvDQCMgOZgcwAmYHMQGaAzGC0simQqnNb8r5zzx0s7ju3JfLLqfrVWc1AZiAzQGYgM5AZIDOQGSAzOCBxCuS++YOep7pM3KEk73p7/mWrGXhpBJkBMgOZgcwAmYHMAJnBAWvinhxgNQNkBjIDmQEyA5mBzACZgcwAmYHMQGaAzEBmIDNAZiAzQGYgM7jQH2ESeWxVzOc3AAAAAElFTkSuQmCC" style="width:96px;display:block;margin:0 auto;border-radius:12px"><div style="font-size:12px;font-weight:800;color:#5b6b5e;margin-top:6px">官网 flydex.ai</div></div>
+  </div>
+
+  <div class="foot">
+    <b>风险提示</b>：数字资产交易存在高风险，杠杆交易可能导致本金全部损失，请根据自身风险承受能力谨慎参与。EDEX 为效用代币，返佣以 EDEX 结算，其价格存在波动风险。竞对费率为 2026 年 8 月公开数据，可能变动。本产品不面向中国大陆、美国及受制裁司法辖区居民。费率与规则以《EDEX 白皮书》及官方公告为准。<br>
+    EDEX Foundation · Supported by NECO Foundation · 2026
+  </div>
+</div>
+</body>
+</html>

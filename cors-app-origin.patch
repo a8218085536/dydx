@@ -1,0 +1,9 @@
+--- /etc/nginx/conf.d/flydex.conf
++++ /etc/nginx/conf.d/flydex.conf
+@@ -8,6 +8,7 @@
+     default "";
+     "https://dapp.flydex.ai" $http_origin;
+     "https://trade.openexchange.dev" $http_origin;
+     "https://testapp.flydex.ai" $http_origin;
+    "https://app.flydex.ai" $http_origin;
+ }

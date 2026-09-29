@@ -1,0 +1,222 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <groupId>com.openexchange.assets</groupId>
+    <artifactId>assets</artifactId>
+    <version>0.1.0-SNAPSHOT</version>
+    <packaging>pom</packaging>
+
+    <name>Assets Engine Parent</name>
+    <description>Authoritative money ledger (balances, holds, settlement) on an Aeron Cluster</description>
+    <url>https://github.com/openexch/assets</url>
+
+    <licenses>
+        <license>
+            <name>Apache License, Version 2.0</name>
+            <url>https://www.apache.org/licenses/LICENSE-2.0</url>
+            <distribution>repo</distribution>
+        </license>
+    </licenses>
+
+    <modules>
+        <module>assets-common</module>
+        <module>assets-cluster</module>
+        <module>assets-bridge</module>
+        <module>assets-projector</module>
+        <module>assets-loadgen</module>
+    </modules>
+
+    <properties>
+        <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+        <maven.compiler.source>21</maven.compiler.source>
+        <maven.compiler.target>21</maven.compiler.target>
+        <!-- cluster-kit, Aeron and Agrona are pinned identical to the match engine so the two
+             Aeron clusters share a substrate and one aeronmd can drive both. SBE is pinned
+             independently of match. -->
+        <cluster-kit.version>0.1.7</cluster-kit.version>
+        <aeron.version>1.52.2</aeron.version>
+        <agrona.version>2.5.0</agrona.version>
+        <sbe.version>1.39.0</sbe.version>
+        <disruptor.version>4.0.0</disruptor.version>
+        <!-- Postgres + pool for the money projector (versions match the OMS repo). -->
+        <postgresql.version>42.7.13</postgresql.version>
+        <hikari.version>7.1.0</hikari.version>
+        <slf4j.version>2.0.18</slf4j.version>
+        <!-- match repo (settlement-journal codecs consumed by assets-bridge): an IMMUTABLE
+             1.0.<utcstamp>.g<sha> from GitHub Packages, deployed by match CI on every main push.
+             The trailing g<sha> names the exact match commit these wire bytes came from.
+             Bumped by match CI's consumer-bump PR (or by hand: pick any published version). -->
+        <match.version>1.0.20260812200017.g335ab24</match.version>
+        <!-- Benchmark loadgen histograms (assets-loadgen only; not in any engine hot path). -->
+        <hdrhistogram.version>2.2.2</hdrhistogram.version>
+        <!-- Default so surefire's ${argLine} resolves even before jacoco's prepare-agent sets it. -->
+        <argLine></argLine>
+    </properties>
+
+    <dependencyManagement>
+        <dependencies>
+            <!-- Internal modules -->
+            <dependency>
+                <groupId>com.openexchange.assets</groupId>
+                <artifactId>assets-common</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+
+            <!-- Cross-repo: match engine's shared kernel (settlement-journal SBE codecs, schema id=3),
+                 the same way order-management depends on com.match:match-common for its own cluster
+                 wire codecs. assets-bridge is the only assets module that pulls this in. -->
+            <dependency>
+                <groupId>com.match</groupId>
+                <artifactId>match-common</artifactId>
+                <version>${match.version}</version>
+            </dependency>
+
+            <!-- Aeron -->
+            <!-- The cluster machinery both engines run on. One copy, so a fix
+                 lands in both places or neither; see openexch/cluster-kit. -->
+            <dependency>
+                <groupId>com.openexchange</groupId>
+                <artifactId>cluster-kit</artifactId>
+                <version>${cluster-kit.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>io.aeron</groupId>
+                <artifactId>aeron-all</artifactId>
+                <version>${aeron.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>io.aeron</groupId>
+                <artifactId>aeron-client</artifactId>
+                <version>${aeron.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>io.aeron</groupId>
+                <artifactId>aeron-cluster</artifactId>
+                <version>${aeron.version}</version>
+            </dependency>
+
+            <!-- Agrona -->
+            <dependency>
+                <groupId>org.agrona</groupId>
+                <artifactId>agrona</artifactId>
+                <version>${agrona.version}</version>
+            </dependency>
+
+            <!-- SBE -->
+            <dependency>
+                <groupId>uk.co.real-logic</groupId>
+                <artifactId>sbe-tool</artifactId>
+                <version>${sbe.version}</version>
+            </dependency>
+
+            <!-- LMAX Disruptor -->
+            <dependency>
+                <groupId>com.lmax</groupId>
+                <artifactId>disruptor</artifactId>
+                <version>${disruptor.version}</version>
+            </dependency>
+
+            <!-- Postgres + connection pool (money projector) -->
+            <dependency>
+                <groupId>org.postgresql</groupId>
+                <artifactId>postgresql</artifactId>
+                <version>${postgresql.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>com.zaxxer</groupId>
+                <artifactId>HikariCP</artifactId>
+                <version>${hikari.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>org.slf4j</groupId>
+                <artifactId>slf4j-simple</artifactId>
+                <version>${slf4j.version}</version>
+            </dependency>
+
+            <!-- Benchmark histograms (assets-loadgen) -->
+            <dependency>
+                <groupId>org.hdrhistogram</groupId>
+                <artifactId>HdrHistogram</artifactId>
+                <version>${hdrhistogram.version}</version>
+            </dependency>
+
+            <!-- Testing -->
+            <dependency>
+                <groupId>junit</groupId>
+                <artifactId>junit</artifactId>
+                <version>4.13.2</version>
+                <scope>test</scope>
+            </dependency>
+        </dependencies>
+    </dependencyManagement>
+
+    <build>
+        <pluginManagement>
+            <plugins>
+                <plugin>
+                    <groupId>org.apache.maven.plugins</groupId>
+                    <artifactId>maven-compiler-plugin</artifactId>
+                    <version>3.15.0</version>
+                    <configuration>
+                        <source>${maven.compiler.source}</source>
+                        <target>${maven.compiler.target}</target>
+                    </configuration>
+                </plugin>
+                <plugin>
+                    <groupId>org.apache.maven.plugins</groupId>
+                    <artifactId>maven-jar-plugin</artifactId>
+                    <version>3.5.1</version>
+                </plugin>
+                <plugin>
+                    <groupId>org.apache.maven.plugins</groupId>
+                    <artifactId>maven-shade-plugin</artifactId>
+                    <version>3.6.2</version>
+                </plugin>
+                <plugin>
+                    <groupId>org.codehaus.mojo</groupId>
+                    <artifactId>exec-maven-plugin</artifactId>
+                    <version>3.6.3</version>
+                </plugin>
+                <plugin>
+                    <groupId>org.apache.maven.plugins</groupId>
+                    <artifactId>maven-surefire-plugin</artifactId>
+                    <version>3.5.6</version>
+                    <configuration>
+                        <!-- Aeron-heavy tests accumulate native + heap memory; a fresh JVM per
+                             test class (deterministic heap) keeps results runner-independent. -->
+                        <reuseForks>false</reuseForks>
+                        <argLine>
+                            ${argLine}
+                            -Xmx2g
+                            --add-opens java.base/jdk.internal.misc=ALL-UNNAMED
+                            --add-opens java.base/java.nio=ALL-UNNAMED
+                            --add-opens java.base/sun.nio.ch=ALL-UNNAMED
+                        </argLine>
+                    </configuration>
+                </plugin>
+                <plugin>
+                    <groupId>org.jacoco</groupId>
+                    <artifactId>jacoco-maven-plugin</artifactId>
+                    <version>0.8.15</version>
+                    <executions>
+                        <execution>
+                            <goals>
+                                <goal>prepare-agent</goal>
+                            </goals>
+                        </execution>
+                        <execution>
+                            <id>report</id>
+                            <phase>test</phase>
+                            <goals>
+                                <goal>report</goal>
+                            </goals>
+                        </execution>
+                    </executions>
+                </plugin>
+            </plugins>
+        </pluginManagement>
+    </build>
+</project>

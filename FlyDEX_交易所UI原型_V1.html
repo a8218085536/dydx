@@ -1,0 +1,2106 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>FlyDEX · 去中心化交易所 UI 原型 V1</title>
+<style>
+:root{
+  --bg:#0E1114; --panel:#16191D; --panel2:#1B1F24; --line:#262B33;
+  --green:#00D632; --green2:#00E63A; --red:#FF5C5C;
+  --txt:#E8EAED; --muted:#9AA3AD; --gold:#E8C56A;
+  --brush:repeating-linear-gradient(180deg,rgba(255,255,255,.035) 0 1px,rgba(255,255,255,0) 1px 3px),
+    linear-gradient(90deg,#13161A 0%,#181C21 40%,rgba(0,214,50,.06) 74%,#13161A 100%);
+}
+*{margin:0;padding:0;box-sizing:border-box;}
+html,body{background:var(--bg);color:var(--txt);
+  font-family:"Helvetica Neue",Arial,"PingFang SC","Microsoft YaHei",sans-serif;
+  font-size:13px;}
+button{font-family:inherit;cursor:pointer;}
+input{font-family:inherit;}
+.mono{font-variant-numeric:tabular-nums;}
+.up{color:var(--green2);}
+.down{color:var(--red);}
+.muted{color:var(--muted);}
+
+/* ============ TOP NAV ============ */
+#topnav{position:fixed;top:0;left:0;right:0;height:56px;z-index:100;
+  background:var(--brush);background-color:#101317;border-bottom:1px solid var(--line);
+  display:flex;align-items:center;padding:0 20px;gap:20px;}
+.logo-wrap{display:flex;align-items:center;gap:9px;flex:0 0 auto;}
+.wordmark{font-size:19px;font-weight:700;color:#fff;letter-spacing:.5px;}
+.wordmark b{color:var(--green);font-weight:800;}
+.nav-tabs{display:flex;gap:2px;height:56px;align-items:stretch;}
+.nav-tab{background:none;border:none;color:var(--muted);font-size:13.5px;
+  padding:0 12px;position:relative;transition:color .15s;white-space:nowrap;}
+.nav-tab:hover{color:var(--txt);}
+.nav-tab.active{color:#fff;font-weight:600;}
+.nav-tab.active::after{content:"";position:absolute;left:10px;right:10px;bottom:0;
+  height:3px;background:var(--green);border-radius:2px 2px 0 0;}
+/* 更多 dropdown */
+.more-wrap{position:relative;display:flex;align-items:center;height:56px;flex:0 0 auto;}
+#moreBtn{background:none;border:none;color:var(--muted);font-size:13.5px;padding:0 12px;height:56px;
+  display:flex;align-items:center;gap:5px;line-height:1;}
+#moreBtn:hover{color:var(--txt);}
+.dd-menu{display:none;position:absolute;top:calc(100% - 2px);left:0;width:230px;
+  background:var(--panel);border:1px solid var(--line);border-radius:10px;
+  padding:6px;z-index:150;box-shadow:0 10px 30px rgba(0,0,0,.5);}
+.dd-menu.open{display:block;}
+.dd-item{display:flex;align-items:center;gap:10px;width:100%;background:none;border:none;
+  color:var(--txt);font-size:12.5px;padding:9px 10px;border-radius:7px;text-align:left;}
+.dd-item:hover{background:var(--panel2);}
+.dd-item svg{flex:0 0 auto;}
+.dd-item i{font-style:normal;color:var(--muted);margin-left:auto;font-size:11px;}
+.dd-sep{height:1px;background:var(--line);margin:6px 4px;}
+.dd-lang{display:flex;align-items:center;gap:10px;padding:8px 10px;font-size:12.5px;}
+.dd-lang .lang-pill{margin-left:auto;}
+.lang-pill{display:flex;border:1px solid var(--line);border-radius:20px;overflow:hidden;}
+.lang-pill span{padding:4px 11px;font-size:11.5px;color:var(--muted);cursor:pointer;}
+.lang-pill span.on{background:var(--panel2);color:var(--txt);font-weight:600;}
+/* right cluster */
+.nav-right{margin-left:auto;display:flex;align-items:center;gap:9px;}
+.btn-deposit{background:var(--green);color:#04240d;font-weight:700;font-size:13px;
+  border:none;border-radius:8px;padding:8px 18px;transition:filter .15s;white-space:nowrap;}
+.btn-deposit:hover{filter:brightness(1.12);}
+.addr-wrap{position:relative;}
+.addr-pill{display:flex;align-items:center;gap:7px;background:var(--panel2);
+  border:1px solid var(--line);border-radius:8px;padding:7px 12px;color:var(--txt);
+  font-size:12.5px;font-weight:600;}
+.addr-pill:hover{border-color:#39414c;}
+.addr-pill .avdot{width:14px;height:14px;border-radius:4px;
+  background:conic-gradient(from 40deg,#00D632 0 25%,#1B1F24 0 50%,#00E63A 0 70%,#2b3540 0);}
+.addr-pill .car{font-size:9px;color:var(--muted);}
+.addr-menu{right:0;left:auto;width:170px;top:44px;}
+.icon-btn{width:34px;height:34px;border-radius:8px;border:1px solid var(--line);
+  background:var(--panel2);display:flex;align-items:center;justify-content:center;color:var(--muted);}
+.icon-btn:hover{color:var(--txt);border-color:#39414c;}
+#burger{display:none;}
+
+/* ============ STATUS STRIP (top) ============ */
+#statusbar{position:fixed;top:56px;left:0;right:0;height:26px;z-index:99;
+  background:var(--brush);background-color:#101317;border-bottom:1px solid var(--line);
+  display:flex;align-items:center;gap:24px;padding:0 20px;font-size:11px;color:var(--muted);}
+#statusbar b{color:var(--txt);font-weight:600;}
+.conn{display:flex;align-items:center;gap:6px;color:var(--green2);margin-left:auto;}
+@keyframes dotp{0%,100%{box-shadow:0 0 0 0 rgba(0,230,58,.5);}50%{box-shadow:0 0 0 6px rgba(0,230,58,0);}}
+.livedot{width:7px;height:7px;border-radius:50%;background:var(--green2);animation:dotp 1.6s infinite;}
+
+/* ============ DRAWER (mobile) ============ */
+#drawer{position:fixed;top:0;left:0;bottom:0;width:270px;z-index:300;background:var(--panel);
+  border-right:1px solid var(--line);transform:translateX(-105%);transition:transform .2s;
+  padding:16px 12px;overflow-y:auto;}
+#drawer.open{transform:translateX(0);}
+#drawerBg{display:none;position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:290;}
+#drawerBg.show{display:block;}
+.dr-nav{display:flex;flex-direction:column;gap:2px;margin-top:14px;}
+.dr-nav .nav-tab{text-align:left;padding:11px 12px;border-radius:8px;height:auto;font-size:14px;}
+.dr-nav .nav-tab.active{background:var(--panel2);}
+.dr-nav .nav-tab.active::after{display:none;}
+.dr-sec{margin-top:16px;font-size:11px;color:var(--muted);padding:0 12px 6px;border-bottom:1px solid var(--line);margin-bottom:6px;}
+
+/* ============ LAYOUT ============ */
+#app{padding:92px 0 24px;}
+.view{display:none;}
+.view.on{display:block;}
+.wrap{width:1440px;margin:0 auto;padding:10px 16px;}
+.panel{background:var(--panel);border:1px solid var(--line);border-radius:10px;}
+.panel-h{padding:9px 12px;border-bottom:1px solid var(--line);font-size:13px;
+  font-weight:600;display:flex;align-items:center;gap:10px;}
+.chip{background:none;border:1px solid var(--line);color:var(--muted);
+  border-radius:6px;padding:4px 10px;font-size:12px;transition:all .15s;}
+.chip:hover{color:var(--txt);border-color:#3a424d;}
+.chip.on{background:rgba(0,214,50,.12);border-color:var(--green);color:var(--green2);font-weight:600;}
+table.tbl{width:100%;border-collapse:collapse;font-size:12.5px;}
+.tbl th{color:var(--muted);font-weight:500;text-align:left;padding:8px 12px;
+  border-bottom:1px solid var(--line);font-size:12px;white-space:nowrap;}
+.tbl td{padding:9px 12px;border-bottom:1px solid rgba(38,43,51,.55);white-space:nowrap;}
+.tbl tr:last-child td{border-bottom:none;}
+.tbl tbody tr:hover{background:rgba(255,255,255,.03);}
+.r{text-align:right !important;}
+h2.vh{font-size:15.5px;font-weight:700;padding:12px 16px;margin-bottom:12px;
+  background:var(--brush);background-color:#14171B;border:1px solid var(--line);border-radius:10px;
+  display:flex;align-items:center;gap:14px;}
+.star{background:none;border:none;color:#59636e;font-size:14px;padding:0 4px;line-height:1;}
+.star.on{color:var(--green2);}
+.coin-ic{display:inline-flex;width:22px;height:22px;border-radius:50%;flex:0 0 auto;
+  align-items:center;justify-content:center;font-size:10px;font-weight:700;
+  margin-right:8px;vertical-align:middle;color:#0b0d10;}
+.copy-btn{background:rgba(0,214,50,.13);border:1px solid var(--green);color:var(--green2);
+  border-radius:8px;padding:6px 14px;font-size:12px;font-weight:600;}
+.btn-g{background:var(--green);border:none;color:#04240d;font-weight:700;font-size:13px;padding:10px 22px;border-radius:8px;}
+.btn-g:hover{filter:brightness(1.1);}
+.btn-o{background:none;border:1px solid var(--line);color:var(--txt);font-size:13px;padding:10px 22px;border-radius:8px;}
+.btn-o:hover{border-color:var(--green);color:var(--green2);}
+.mini-btn{background:none;border:1px solid var(--line);color:var(--muted);
+  font-size:11px;padding:3px 10px;border-radius:5px;}
+.mini-btn:hover{color:var(--txt);border-color:#39414c;}
+.tag{display:inline-block;font-size:10.5px;padding:1.5px 7px;border-radius:4px;font-weight:600;}
+.tag.buy{background:rgba(0,230,58,.14);color:var(--green2);}
+.tag.sell{background:rgba(255,92,92,.14);color:var(--red);}
+
+/* ============ VIEW 1 交易 ============ */
+.pairbar{display:flex;align-items:center;gap:24px;padding:10px 16px;margin-bottom:10px;position:relative;}
+.pair-sel{display:flex;align-items:center;gap:8px;cursor:pointer;padding:4px 8px;border-radius:8px;position:relative;}
+.pair-sel:hover{background:var(--panel2);}
+.pair-name{font-size:17px;font-weight:700;color:#fff;}
+.caret{border:solid var(--muted);border-width:0 2px 2px 0;display:inline-block;
+  padding:3px;transform:rotate(45deg);margin-top:-3px;}
+.px-big{font-size:21px;font-weight:700;}
+.stat{display:flex;flex-direction:column;gap:2px;}
+.stat b{font-size:12.5px;font-weight:600;}
+.stat i{font-style:normal;font-size:11px;color:var(--muted);}
+.mkt-chips{margin-left:auto;display:flex;gap:6px;}
+/* pair dropdown */
+#pairDD{display:none;position:absolute;top:52px;left:10px;width:478px;z-index:80;
+  background:var(--panel);border:1px solid var(--line);border-radius:12px;
+  box-shadow:0 14px 40px rgba(0,0,0,.55);overflow:hidden;}
+#pairDD.open{display:block;}
+.pdd-tabs{display:flex;border-bottom:1px solid var(--line);}
+.pdd-tab{flex:1;background:none;border:none;color:var(--muted);font-size:13px;padding:11px 0;position:relative;}
+.pdd-tab.on{color:#fff;font-weight:600;}
+.pdd-tab.on::after{content:"";position:absolute;left:28%;right:28%;bottom:-1px;height:2px;background:var(--green);}
+.pdd-list{max-height:340px;overflow-y:auto;padding:4px 0;}
+.pdd-row{display:flex;align-items:center;gap:8px;padding:8px 12px;cursor:pointer;font-size:12.5px;}
+.pdd-row:hover{background:var(--panel2);}
+.pdd-row .nm{font-weight:600;}
+.pdd-row .px{margin-left:auto;text-align:right;}
+.pdd-row .chg{width:64px;text-align:right;font-weight:600;}
+.rank-row{display:flex;align-items:center;gap:9px;padding:9px 12px;cursor:pointer;font-size:12.5px;}
+.rank-row .nm,.pdd-row .nm{white-space:nowrap;}
+.rank-row:hover{background:var(--panel2);}
+.rank-num{width:22px;font-weight:800;font-size:14px;color:var(--muted);text-align:center;}
+.rank-row.top .rank-num{color:var(--green2);}
+.rank-chg{font-size:15px;font-weight:800;width:76px;text-align:right;}
+.rank-vol{width:90px;text-align:right;color:var(--muted);font-size:11.5px;}
+
+.trade-grid{display:grid;grid-template-columns:1fr 262px 300px;gap:10px;align-items:stretch;}
+.chart-panel{display:flex;flex-direction:column;min-height:474px;}
+.tf-row{display:flex;gap:4px;padding:8px 12px;border-bottom:1px solid var(--line);align-items:center;}
+.tf{background:none;border:none;color:var(--muted);font-size:12px;padding:4px 9px;border-radius:5px;}
+.tf:hover{color:var(--txt);background:var(--panel2);}
+.tf.on{background:rgba(0,214,50,.14);color:var(--green2);font-weight:600;}
+#chartbox{flex:1;position:relative;}
+#chartsvg{display:block;width:100%;height:100%;}
+
+.ob-panel{display:flex;flex-direction:column;}
+.ob-head,.ob-row{display:grid;grid-template-columns:1fr 1fr 1fr;padding:2px 12px;font-size:11.8px;}
+.ob-head{color:var(--muted);padding:6px 12px 4px;font-size:11px;}
+.ob-row{position:relative;line-height:19px;cursor:default;}
+.ob-row:hover{background:rgba(255,255,255,.04);}
+.ob-row .depth{position:absolute;right:0;top:1px;bottom:1px;opacity:.13;border-radius:2px;}
+.ob-row span{position:relative;z-index:1;}
+.ob-row .c2,.ob-row .c3{text-align:right;color:var(--txt);}
+.ob-spread{display:flex;justify-content:space-between;align-items:center;
+  padding:5px 12px;margin:2px 0;background:var(--panel2);
+  border-top:1px solid var(--line);border-bottom:1px solid var(--line);}
+.ob-spread b{font-size:15px;}
+.trades-list{max-height:212px;overflow:hidden;}
+.tr-row{display:grid;grid-template-columns:1fr 1fr 1fr;padding:2.5px 12px;font-size:11.8px;line-height:17px;}
+.tr-row:hover{background:rgba(255,255,255,.04);}
+.tr-row .c1{color:var(--muted);}
+.tr-row .c2{text-align:right;}
+.tr-row .c3{text-align:right;color:var(--txt);}
+
+.order-panel{padding:0 0 12px;display:flex;flex-direction:column;}
+.ot-tabs{display:flex;border-bottom:1px solid var(--line);}
+.ot-tab{flex:1;background:none;border:none;color:var(--muted);font-size:13px;padding:11px 0;position:relative;}
+.ot-tab.on{color:#fff;font-weight:600;}
+.ot-tab.on::after{content:"";position:absolute;left:22%;right:22%;bottom:-1px;height:2px;background:var(--green);}
+.side-toggle{display:flex;gap:8px;padding:12px 12px 0;}
+.side-btn{flex:1;border-radius:8px;border:1px solid var(--line);background:var(--panel2);
+  color:var(--muted);font-size:13px;font-weight:600;padding:9px 0;}
+.side-btn.buy.on{background:rgba(0,230,58,.16);border-color:var(--green);color:var(--green2);}
+.side-btn.sell.on{background:rgba(255,92,92,.14);border-color:var(--red);color:var(--red);}
+.fld{padding:10px 12px 0;}
+.fld label{display:flex;justify-content:space-between;font-size:11.5px;color:var(--muted);margin-bottom:5px;}
+.inp{display:flex;align-items:center;background:var(--panel2);
+  border:1px solid var(--line);border-radius:8px;padding:0 10px;}
+.inp:focus-within{border-color:var(--green);}
+.inp input{flex:1;background:none;border:none;outline:none;color:var(--txt);
+  font-size:14px;padding:9px 0;text-align:right;min-width:0;}
+.inp em{font-style:normal;color:var(--muted);font-size:12px;margin-left:8px;}
+.pct-row{display:flex;gap:6px;padding:10px 12px 0;}
+.pct{flex:1;background:var(--panel2);border:1px solid var(--line);color:var(--muted);
+  font-size:11.5px;padding:5px 0;border-radius:6px;}
+.pct.on{border-color:var(--green);color:var(--green2);background:rgba(0,214,50,.12);}
+#levBlock{padding:12px 12px 0;display:none;}
+#levBlock.show{display:block;}
+.lev-head{display:flex;justify-content:space-between;font-size:11.5px;color:var(--muted);margin-bottom:8px;}
+.lev-head b{color:var(--green2);font-size:13px;}
+input[type=range]{width:100%;-webkit-appearance:none;height:4px;border-radius:2px;
+  background:linear-gradient(90deg,var(--green) 0%,var(--green) 44%,#262B33 44%);outline:none;}
+input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:14px;height:14px;
+  border-radius:50%;background:var(--green2);border:2px solid #0b0d10;cursor:pointer;}
+.lev-marks{display:flex;justify-content:space-between;font-size:10.5px;color:var(--muted);margin-top:4px;}
+.tif-row{display:flex;gap:14px;padding:12px 12px 0;font-size:11.8px;color:var(--muted);}
+.tif-row label{display:flex;align-items:center;gap:5px;cursor:pointer;}
+.tif-row input{accent-color:var(--green);}
+.cta{margin:14px 12px 0;border:none;border-radius:9px;padding:12px 0;
+  font-size:14.5px;font-weight:700;transition:filter .15s;}
+.cta.buy{background:var(--green);color:#04240d;}
+.cta.sell{background:var(--red);color:#2b0505;}
+.cta:hover{filter:brightness(1.1);}
+.fee-note{padding:11px 12px 0;font-size:11.5px;color:var(--muted);line-height:1.7;}
+.fee-note b{color:var(--txt);font-weight:600;}
+.fee-note .mk{color:var(--green2);}
+
+.bottom-strip{margin-top:10px;}
+.bs-tabs{display:flex;gap:2px;border-bottom:1px solid var(--line);padding:0 6px;}
+.bs-tab{background:none;border:none;color:var(--muted);font-size:12.5px;padding:10px 13px;position:relative;}
+.bs-tab.on{color:#fff;font-weight:600;}
+.bs-tab.on::after{content:"";position:absolute;left:10px;right:10px;bottom:-1px;height:2px;background:var(--green);}
+.bs-pane{display:none;}
+.bs-pane.on{display:block;}
+
+/* ============ VIEW 2 行情 ============ */
+.mkts-bar{display:flex;align-items:flex-end;gap:6px;margin-bottom:12px;border-bottom:1px solid var(--line);flex-wrap:wrap;}
+.mkts-bar .sub-tab{padding:11px 14px;font-size:13px;}
+.search-box{margin-left:auto;display:flex;align-items:center;gap:7px;background:var(--panel2);
+  border:1px solid var(--line);border-radius:8px;padding:6px 11px;margin-bottom:7px;}
+.search-box:focus-within{border-color:var(--green);}
+.search-box input{background:none;border:none;outline:none;color:var(--txt);font-size:12.5px;width:180px;}
+.search-box input::placeholder{color:var(--muted);}
+.mini-tabs{display:flex;gap:2px;}
+.mini-tab{background:none;border:none;color:var(--muted);font-size:12.5px;padding:4px 10px;border-radius:6px;}
+.mini-tab.on{background:rgba(0,214,50,.12);color:var(--green2);font-weight:600;}
+/* 我的订单 · 多订单卡片 */
+.ord-sum{display:flex;align-items:center;gap:34px;padding:14px 18px;margin-bottom:12px;flex-wrap:wrap;}
+.ord-sum .os b{display:block;font-size:18px;font-weight:800;}
+.ord-sum .os i{font-style:normal;font-size:11.5px;color:var(--muted);}
+.ord-card{padding:14px 16px;margin-bottom:10px;}
+.oc-top{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:12px;}
+.ord-no{font-size:12.5px;font-weight:700;}
+.tier-pill{font-size:11.5px;font-weight:700;color:var(--green2);background:rgba(0,214,50,.12);
+  padding:3px 10px;border-radius:12px;}
+.prot-badge{font-size:11.5px;padding:3px 10px;border-radius:12px;border:1px solid var(--line);color:var(--muted);}
+.prot-badge.ok{border-color:var(--green);color:var(--green2);background:rgba(0,214,50,.1);}
+.prot-badge.done{border-color:#6b5a2c;color:var(--gold);background:rgba(232,197,106,.1);}
+.oc-btns{margin-left:auto;display:flex;gap:8px;flex-wrap:wrap;}
+.oc-grid{display:grid;grid-template-columns:repeat(5,1fr);gap:12px;}
+.oc-cell i{font-style:normal;display:block;font-size:11px;color:var(--muted);margin-bottom:4px;}
+.oc-cell b{font-size:13.5px;font-weight:700;}
+.oc-cell .pbar{margin-top:6px;}
+/* 团队层级 */
+.lv-badge{display:inline-block;font-size:10.5px;font-weight:700;padding:1.5px 7px;border-radius:4px;
+  background:var(--panel2);border:1px solid var(--line);color:var(--muted);}
+.lv-badge.l1{border-color:var(--green);color:var(--green2);}
+.empty-cell{color:var(--muted);font-size:11.5px;padding:10px 12px 10px 40px;}
+.spark{vertical-align:middle;}
+.badge-main{display:inline-block;margin-left:7px;font-size:10px;font-weight:700;
+  color:#04240d;background:var(--green2);padding:1.5px 6px;border-radius:4px;vertical-align:1px;}
+.btn-trade-s{background:rgba(0,214,50,.13);border:1px solid var(--green);
+  color:var(--green2);font-size:12px;font-weight:600;padding:5px 16px;border-radius:6px;}
+.btn-trade-s:hover{background:var(--green);color:#04240d;}
+
+/* ============ VIEW 3 广场（排行榜） ============ */
+.sq-grid{display:grid;grid-template-columns:1fr 300px;gap:12px;align-items:start;}
+.iden-av{border-radius:7px;flex:0 0 auto;display:block;}
+.spot-row{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-bottom:12px;}
+.spot-card{position:relative;padding:16px;display:flex;flex-direction:column;gap:9px;}
+.spot-card .medal{position:absolute;top:12px;right:14px;font-size:20px;line-height:1;}
+.spot-head{display:flex;align-items:center;gap:10px;}
+.spot-name{font-size:14.5px;font-weight:700;}
+.bdg{display:inline-block;font-size:10px;font-weight:700;padding:1.5px 7px;border-radius:4px;
+  background:var(--panel2);border:1px solid var(--line);color:var(--muted);}
+.bdg.n{color:var(--green2);border-color:rgba(0,214,50,.45);background:rgba(0,214,50,.10);}
+.bdg.g{color:var(--gold,#E8C56A);border-color:rgba(232,197,106,.45);background:rgba(232,197,106,.10);}
+.spot-stat{font-size:27px;font-weight:800;color:var(--green2);line-height:1.15;}
+.spot-stat i{display:block;font-style:normal;font-size:11px;color:var(--muted);font-weight:400;margin-top:3px;}
+.btn-follow{border:1px solid var(--green);background:rgba(0,214,50,.12);color:var(--green2);
+  font-size:12px;font-weight:600;padding:7px 0;border-radius:7px;width:100%;}
+.btn-follow:hover{background:var(--green);color:#04240d;}
+.btn-follow.on{border-color:var(--line);background:var(--panel2);color:var(--muted);}
+.btn-follow.on:hover{background:var(--panel2);color:var(--txt);}
+.btn-follow.lb-btn{width:82px;padding:4px 0;font-size:11.5px;}
+.rank-n{display:inline-flex;width:22px;height:22px;border-radius:6px;align-items:center;justify-content:center;
+  font-size:11.5px;font-weight:700;background:var(--panel2);border:1px solid var(--line);color:var(--muted);}
+.rank-n.top{color:var(--green2);border-color:rgba(0,214,50,.4);}
+.lb-user{display:flex;align-items:center;gap:10px;}
+.feed-item{padding:11px 13px;border-bottom:1px solid rgba(38,43,51,.55);}
+.feed-item:last-child{border-bottom:none;}
+.feed-top{display:flex;align-items:center;gap:8px;margin-bottom:5px;}
+.feed-top b{font-size:12.5px;}
+.feed-txt{font-size:12px;line-height:1.65;color:var(--txt);}
+.feed-meta{margin-top:6px;font-size:11px;color:var(--muted);display:flex;gap:14px;}
+.lb-empty{padding:40px 0;text-align:center;color:var(--muted);font-size:12.5px;}
+
+/* ============ VIEW 4 流动性 ============ */
+.sub-tabs{display:flex;gap:2px;margin-bottom:12px;border-bottom:1px solid var(--line);}
+.sub-tab{background:none;border:none;color:var(--muted);font-size:13.5px;padding:11px 16px;position:relative;}
+.sub-tab.on{color:#fff;font-weight:600;}
+.sub-tab.on::after{content:"";position:absolute;left:12px;right:12px;bottom:-1px;height:2.5px;background:var(--green);}
+.sub-pane{display:none;}
+.sub-pane.on{display:block;}
+.mint-summary{display:flex;align-items:center;gap:34px;padding:15px 20px;margin-bottom:12px;}
+.ms-item b{font-size:17px;font-weight:700;color:var(--green2);display:block;}
+.ms-item i{font-style:normal;font-size:11.5px;color:var(--muted);}
+.gauge{width:180px;}
+.gauge .bar{height:8px;background:#22272E;border-radius:4px;overflow:hidden;margin-top:5px;}
+.gauge .bar span{display:block;height:100%;width:96%;border-radius:4px;
+  background:linear-gradient(90deg,#0a8a2b,var(--green2));}
+.tier-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;}
+.tier-card{background:var(--panel);border:1px solid var(--line);border-radius:10px;
+  padding:16px;display:flex;flex-direction:column;gap:7px;transition:transform .15s,border-color .15s;}
+.tier-card:hover{transform:translateY(-3px);border-color:#39414c;}
+.tier-card.gold{border-color:var(--gold);background:linear-gradient(180deg,#1c1a14,#16191D);}
+.tier-card.gold:hover{border-color:#f5da8f;}
+.tier-top{display:flex;justify-content:space-between;align-items:center;}
+.tier-name{font-size:15px;font-weight:700;}
+.tier-mult{font-size:12px;font-weight:700;color:var(--green2);
+  background:rgba(0,214,50,.12);padding:2px 9px;border-radius:12px;}
+.tier-card.gold .tier-mult{color:var(--gold);background:rgba(232,197,106,.12);}
+.tier-apr{font-size:29px;font-weight:800;color:var(--green2);line-height:1.1;}
+.tier-apr i{font-style:normal;font-size:11px;color:var(--muted);font-weight:400;display:block;margin-top:2px;}
+.tier-row{display:flex;justify-content:space-between;font-size:12px;color:var(--muted);}
+.tier-row b{color:var(--txt);font-weight:600;}
+.btn-sub{margin-top:6px;background:var(--green);border:none;color:#04240d;
+  font-weight:700;font-size:13px;padding:9px 0;border-radius:8px;}
+.btn-sub:hover{filter:brightness(1.12);}
+.tier-card.gold .btn-sub{background:linear-gradient(90deg,#E8C56A,#f5da8f);color:#3a2b05;}
+.mint-foot{margin-top:14px;font-size:11.5px;color:var(--muted);line-height:1.8;
+  border-top:1px dashed var(--line);padding-top:11px;}
+/* 我的订单 */
+.order-head{display:flex;align-items:center;gap:26px;padding:15px 20px;margin-bottom:12px;}
+.order-head .oh-b{font-size:16px;font-weight:800;}
+.order-cards{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:12px;}
+.oc{padding:18px 20px;display:flex;align-items:center;gap:18px;}
+.oc .big{font-size:24px;font-weight:800;color:var(--green2);white-space:nowrap;}
+.oc .lbl{font-size:11.5px;color:var(--muted);margin-bottom:3px;}
+.oc .desc{font-size:11.5px;color:var(--muted);line-height:1.7;}
+
+/* ============ VIEW 5 AGENT ============ */
+.agent-grid{display:grid;grid-template-columns:360px 1fr 380px;gap:12px;}
+.eddy-box{display:flex;flex-direction:column;align-items:center;padding:22px 18px 8px;}
+@keyframes pulse{0%,100%{opacity:.35;transform:scale(.96);}50%{opacity:.9;transform:scale(1.05);}}
+.eddy-glow{animation:pulse 2.2s ease-in-out infinite;transform-origin:center;}
+.eddy-status{margin-top:10px;display:flex;align-items:center;gap:7px;font-size:12.5px;color:var(--green2);font-weight:600;}
+.a-stats{padding:8px 16px 16px;display:flex;flex-direction:column;gap:9px;}
+.a-row{display:flex;justify-content:space-between;font-size:12.5px;}
+.a-row i{font-style:normal;color:var(--muted);}
+.a-row b{font-weight:600;}
+.pbar{height:9px;background:#22272E;border-radius:5px;overflow:hidden;margin-top:3px;}
+.pbar span{display:block;height:100%;width:13.8%;background:linear-gradient(90deg,#0a8a2b,var(--green2));border-radius:5px;}
+.chatbox{display:flex;flex-direction:column;height:100%;}
+#chatlog{flex:1;padding:14px;display:flex;flex-direction:column;gap:10px;overflow-y:auto;max-height:380px;}
+.bub{max-width:82%;padding:9px 12px;border-radius:11px;font-size:12.5px;line-height:1.6;}
+.bub.user{align-self:flex-end;background:rgba(0,214,50,.15);border:1px solid rgba(0,214,50,.35);border-bottom-right-radius:3px;}
+.bub.eddy{align-self:flex-start;background:var(--panel2);border:1px solid var(--line);border-bottom-left-radius:3px;}
+.bub.eddy::before{content:"小蝶";display:block;font-size:10px;color:var(--green2);font-weight:700;margin-bottom:3px;}
+.chat-in{display:flex;gap:8px;padding:11px;border-top:1px solid var(--line);}
+.chat-in input{flex:1;background:var(--panel2);border:1px solid var(--line);border-radius:8px;
+  padding:9px 11px;color:var(--txt);outline:none;font-size:12.5px;min-width:0;}
+.chat-in input:focus{border-color:var(--green);}
+.chat-in button{background:var(--green);border:none;color:#04240d;font-weight:700;
+  padding:0 18px;border-radius:8px;font-size:13px;}
+.lvl-tags{display:flex;gap:8px;margin-top:12px;flex-wrap:wrap;}
+.ltag{font-size:11.5px;padding:5px 11px;border-radius:14px;border:1px solid var(--line);color:var(--muted);}
+.ltag.live{border-color:var(--green);color:var(--green2);background:rgba(0,214,50,.1);font-weight:600;}
+.ltag.off{opacity:.45;}
+
+/* ============ VIEW 6 我的账户 ============ */
+.profile-card{display:flex;align-items:center;gap:22px;padding:18px 22px;margin-bottom:12px;flex-wrap:wrap;}
+.iden{width:52px;height:52px;border-radius:12px;flex:0 0 auto;}
+.badge-lvl{display:inline-block;background:rgba(0,214,50,.14);border:1px solid var(--green);
+  color:var(--green2);font-weight:800;font-size:13px;padding:3px 12px;border-radius:14px;}
+.prof-note{font-size:11.5px;color:var(--muted);width:100%;border-top:1px dashed var(--line);padding-top:10px;}
+.asset-top{display:flex;align-items:center;gap:24px;padding:20px 22px;margin-bottom:12px;}
+.asset-total b{font-size:30px;font-weight:800;display:block;}
+.asset-total i{font-style:normal;font-size:12px;color:var(--muted);}
+.asset-btns{margin-left:auto;display:flex;gap:10px;}
+.pending-card{margin-top:12px;display:flex;align-items:center;gap:20px;padding:16px 22px;}
+.pending-card b{font-size:20px;font-weight:800;color:var(--green2);}
+/* 团队 */
+.team-line{display:flex;align-items:center;gap:22px;padding:11px 16px;margin-bottom:12px;
+  font-size:12.5px;color:var(--muted);flex-wrap:wrap;}
+.team-line b{color:var(--txt);font-weight:600;}
+.tl-prog{display:flex;align-items:center;gap:9px;}
+.tl-prog .pbar{width:140px;margin:0;}
+.team-cards{display:grid;grid-template-columns:repeat(5,1fr);gap:10px;margin-bottom:12px;}
+.tc{padding:15px 16px;}
+.tc i{font-style:normal;font-size:11.5px;color:var(--muted);display:block;margin-bottom:7px;}
+.tc b{font-size:22px;font-weight:800;display:block;line-height:1.15;}
+.tc u{text-decoration:none;font-size:11px;color:var(--muted);display:block;margin-top:5px;}
+.crumb{display:flex;align-items:center;gap:7px;font-size:12.5px;color:var(--muted);font-weight:400;flex-wrap:wrap;}
+.crumb a{color:var(--green2);cursor:pointer;}
+.crumb a:hover{text-decoration:underline;}
+.btn-back{background:var(--panel2);border:1px solid var(--line);color:var(--txt);
+  font-size:11.5px;padding:5px 13px;border-radius:6px;margin-left:auto;}
+.btn-back:hover{border-color:var(--green);color:var(--green2);}
+tr.drill{cursor:pointer;}
+tr.drill .go{color:var(--muted);margin-left:6px;}
+tr.drill:hover .go{color:var(--green2);}
+.team-empty{padding:46px 0;text-align:center;color:var(--muted);font-size:13px;}
+.team-empty div{font-size:24px;margin-bottom:9px;opacity:.45;}
+.sub-row td{background:rgba(255,255,255,.02);color:var(--muted);}
+.exp-arrow{background:none;border:none;color:var(--muted);font-size:12px;padding:2px 6px;}
+.exp-arrow:hover{color:var(--green2);}
+/* 我的收益 */
+.earn-block{margin-bottom:12px;}
+.earn-head{display:flex;align-items:stretch;gap:0;padding:0;flex-wrap:nowrap;}
+.earn-head .eb{font-size:22px;font-weight:800;color:var(--green2);white-space:nowrap;}
+.earn-head .el{font-size:11.5px;color:var(--muted);}
+.earn-detail{display:none;border-top:1px solid var(--line);}
+.earn-detail.open{display:block;}
+.detail-btn{margin-left:auto;background:none;border:1px solid var(--line);color:var(--muted);
+  font-size:12px;padding:6px 14px;border-radius:7px;}
+.detail-btn:hover{color:var(--green2);border-color:var(--green);}
+.invite-row{display:flex;align-items:center;gap:10px;padding:12px 20px;border-top:1px dashed var(--line);flex-wrap:wrap;}
+.invite-row code{background:var(--panel2);border:1px solid var(--line);border-radius:8px;
+  padding:8px 12px;font-size:11.5px;}
+
+/* ============ MODALS ============ */
+.modal-bg{display:none;position:fixed;inset:0;background:rgba(0,0,0,.62);z-index:400;
+  align-items:center;justify-content:center;}
+.modal-bg.show{display:flex;}
+.modal{width:440px;max-width:94vw;max-height:88vh;overflow-y:auto;background:var(--panel);
+  border:1px solid var(--line);border-radius:12px;padding:20px;}
+.modal h3{font-size:15px;margin-bottom:14px;display:flex;justify-content:space-between;}
+.modal h3 span{cursor:pointer;color:var(--muted);font-weight:400;}
+.step{display:flex;gap:12px;margin-bottom:16px;}
+.step-n{flex:0 0 auto;width:24px;height:24px;border-radius:50%;background:rgba(0,214,50,.15);
+  border:1px solid var(--green);color:var(--green2);font-weight:800;font-size:12px;
+  display:flex;align-items:center;justify-content:center;}
+.step-b{flex:1;min-width:0;}
+.step-b .st{font-size:13px;font-weight:700;margin-bottom:8px;}
+.coin-btns{display:flex;gap:8px;}
+.coin-btn{flex:1;background:var(--panel2);border:1px solid var(--line);color:var(--txt);
+  border-radius:9px;padding:10px 0;font-size:13px;font-weight:700;}
+.coin-btn.on{border-color:var(--green);color:var(--green2);background:rgba(0,214,50,.12);}
+.qr-box{width:160px;height:160px;margin:0 auto 12px;border-radius:8px;background:
+  repeating-linear-gradient(0deg,#262B33 0 10px,#1B1F24 10px 20px),
+  repeating-linear-gradient(90deg,#262B33 0 10px,#1B1F24 10px 20px);
+  background-blend-mode:overlay;border:1px solid var(--line);position:relative;}
+.qr-box::after{content:"QR";position:absolute;inset:0;display:flex;align-items:center;
+  justify-content:center;font-weight:800;color:var(--green2);font-size:15px;
+  background:rgba(14,17,20,.55);border-radius:8px;}
+.addr-box{display:flex;gap:8px;}
+.addr-box code{flex:1;background:var(--panel2);border:1px solid var(--line);border-radius:8px;
+  padding:9px 10px;font-size:11.5px;color:var(--txt);overflow:hidden;text-overflow:ellipsis;}
+.big-note{background:rgba(0,214,50,.08);border:1px solid rgba(0,214,50,.3);border-radius:9px;
+  padding:11px 14px;font-size:13.5px;font-weight:700;color:var(--green2);text-align:center;margin:12px 0;}
+.plain-note{font-size:12px;color:var(--muted);line-height:1.8;}
+.plain-note b{color:var(--txt);}
+.w-full{width:100%;margin-top:6px;}
+.edex-tip{display:none;background:rgba(232,197,106,.08);border:1px solid rgba(232,197,106,.35);
+  border-radius:8px;padding:9px 12px;font-size:11.8px;color:var(--gold);margin-top:10px;line-height:1.7;}
+.edex-tip.show{display:block;}
+.m-fld{margin-top:12px;}
+.m-fld label{display:block;font-size:11.5px;color:var(--muted);margin-bottom:5px;}
+
+/* ============ MOBILE ============ */
+@media (max-width:768px){
+  body{min-width:0;}
+  #topnav{padding:0 12px;gap:10px;}
+  .nav-tabs,.more-wrap{display:none;}
+  #topnav .icon-btn{display:none;}
+  #topnav #burger{display:flex;}
+  .btn-deposit{padding:8px 13px;}
+  #statusbar{padding:0 12px;gap:12px;font-size:10px;overflow:hidden;}
+  .hide-m{display:none;}
+  .wrap{width:100%;padding:8px;}
+  .panel{overflow-x:hidden;}
+  .tbl th,.tbl td{white-space:normal;word-break:break-word;padding:8px 6px;font-size:11.5px;}
+  .oc-grid{grid-template-columns:1fr 1fr;}
+  .search-box input{width:110px;}
+  .search-box{margin-left:0;width:100%;}
+  .trade-grid>*,.sq-grid>*,.agent-grid>*{min-width:0;}
+  .trade-grid{grid-template-columns:1fr;}
+  .chart-panel{min-height:300px;}
+  .pairbar{flex-wrap:wrap;gap:12px 18px;}
+  .mkt-chips{margin-left:0;width:100%;}
+  #pairDD{width:min(430px,92vw);}
+  .agent-grid,.sq-grid{grid-template-columns:1fr;}
+  .tier-grid,.order-cards,.team-cards{grid-template-columns:1fr 1fr;}
+  .oc{flex-wrap:wrap;gap:12px;padding:14px;}
+  .oc>div{min-width:0;width:100%;}
+  .oc .btn-g,.oc .btn-o{margin-left:0 !important;width:100%;white-space:normal !important;}
+  .team-cards .tc:last-child{grid-column:1 / -1;}
+  .mint-summary,.order-head{flex-wrap:wrap;gap:14px;}
+  .asset-top{flex-wrap:wrap;}
+  .asset-btns{margin-left:0;width:100%;}
+  h2.vh{flex-wrap:wrap;}
+}
+@media (min-width:769px){
+  body{min-width:1440px;}
+}
+
+/* --- no horizontal scroll anywhere --- */
+html,body{max-width:100%;overflow-x:hidden!important;}
+.view,.wrap,.panel,section,div{max-width:100%;}
+table.tbl{width:100%;table-layout:fixed;}
+table.tbl th,table.tbl td{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+*::-webkit-scrollbar{height:0;width:6px;}
+*::-webkit-scrollbar-thumb{background:#2b323a;border-radius:3px;}
+
+#ohlcTip{position:absolute;left:10px;top:8px;font-size:11px;font-family:ui-monospace,Menlo,monospace;color:#9AA3AD;pointer-events:none;z-index:3;letter-spacing:.02em;}
+#ohlcTip b{font-weight:700;margin-left:2px;}
+#chartsvg{width:100%;height:100%;display:block;}
+
+.sq-grid>div:last-child{align-self:start;}
+
+.typ-tag{font-size:10.5px;font-weight:700;color:#9AA3AD;border:1px solid #2b323a;border-radius:4px;padding:1px 6px;margin-left:8px;flex:none;}
+.pdd-row .px{margin-left:auto;}
+
+.pdd-rk-h{display:flex;align-items:center;gap:8px;padding:7px 12px;font-size:10.5px;color:#77808A;font-weight:700;border-bottom:1px solid #22272E;}
+.pdd-rk-h span:nth-child(1){width:26px;}
+
+.tl-h{display:flex;align-items:center;padding:10px 16px;font-size:11px;color:#77808A;font-weight:700;border-bottom:1px solid #22272E;}
+.tl-row{display:flex;align-items:center;padding:13px 16px;border-bottom:1px solid #1b1f24;transition:background .15s;}
+.tl-row:hover{background:#1a1e23;} .tl-row.act{background:#181d21;}
+.tl-h .c1,.tl-row .c1{width:34%;display:flex;align-items:center;gap:9px;min-width:0;}
+.tl-row .c1 b{font-size:15px;font-weight:800;}
+.tl-h .c2,.tl-row .c2{width:19%;color:#C7CDD4;font-size:13px;}
+.tl-h .c3,.tl-row .c3{width:16%;color:var(--green2);font-weight:800;font-size:15px;}
+.tl-h .c4,.tl-row .c4{width:18%;color:#9AA3AD;font-size:13px;}
+.tl-h .c5,.tl-row .c5{margin-left:auto;}
+.tl-tag{font-size:10px;font-weight:800;color:#E8C56A;border:1px solid rgba(232,197,106,.45);border-radius:4px;padding:1px 6px;white-space:nowrap;}
+.tl-note-s{font-size:11px;color:#6b747e;font-weight:600;}
+.btn-sub-sm{background:transparent;border:1px solid #2f3740;color:#C7CDD4;font-size:12.5px;font-weight:700;padding:6px 20px;border-radius:7px;cursor:pointer;}
+.btn-sub-sm:hover{border-color:var(--green);color:var(--green2);}
+.tl-sub{max-height:0;overflow:hidden;transition:max-height .28s ease;background:#15191d;}
+.tl-sub.on{max-height:340px;border-bottom:1px solid #1b1f24;}
+.tls-in{display:flex;gap:0;align-items:stretch;padding:0;flex-wrap:nowrap;}
+.tls-f label{display:block;font-size:11px;color:#77808A;margin-bottom:6px;font-weight:700;}
+.tls-inp{display:flex;align-items:center;background:#0E1114;border:1px solid #2b323a;border-radius:8px;padding:7px 10px;}
+.tls-inp input{background:none;border:none;color:#E8EAED;font-size:14px;width:100px;outline:none;font-family:ui-monospace,Menlo,monospace;}
+.tls-inp span{font-size:11.5px;color:#77808A;font-weight:700;}
+.tls-val{font-size:15px;font-weight:800;padding:7px 0;}
+.tls-hint{font-size:10.5px;color:#6b747e;margin-top:5px;}
+.tls-act{display:flex;gap:8px;margin-left:auto;}
+.tls-note{font-size:10.5px;color:#6b747e;padding:0 16px 14px;}
+
+.sum3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;margin-bottom:12px;}
+.s3{padding:16px 18px;}
+.s3l{font-size:11.5px;color:#77808A;font-weight:700;}
+.s3b{font-size:26px;font-weight:800;margin-top:8px;letter-spacing:-.01em;}
+.s3b span{font-size:13px;color:#77808A;font-weight:600;}
+.s3d{font-size:11.5px;color:#8b949e;margin-top:9px;}
+.s3d b{font-weight:800;}
+@media(max-width:768px){.sum3{grid-template-columns:1fr;}}
+
+.pf-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:1px;background:#1b1f24;}
+.pf{background:var(--panel);padding:15px 16px;}
+.pf i{display:block;font-size:11px;color:#77808A;font-weight:700;font-style:normal;}
+.pf b{display:block;font-size:18px;font-weight:800;margin-top:7px;letter-spacing:-.01em;}
+.pf b span{font-size:11.5px;color:#77808A;font-weight:600;}
+.td-line{display:flex;align-items:center;gap:8px;flex-wrap:wrap;}
+.pt-btn{background:transparent;border:1px solid #2f3740;color:#9AA3AD;font-size:10.5px;font-weight:700;padding:3px 9px;border-radius:5px;cursor:pointer;white-space:nowrap;}
+.pt-btn.on{border-color:var(--green);color:var(--green2);}
+@media(max-width:768px){.pf-grid{grid-template-columns:repeat(2,1fr);}}
+
+#chartbox{flex:1;min-height:0;overflow:hidden;}
+#chartsvg{width:100%;height:100%;display:block;}
+
+.earn-head .eb{font-size:20px!important;font-weight:700!important;color:var(--txt)!important;letter-spacing:-.01em;}
+.earn-head .eb.up{color:var(--txt)!important;}
+.s3b{font-size:22px!important;font-weight:700!important;color:var(--txt)!important;}
+.s3b.up{color:var(--txt)!important;}
+.s3d b.up{color:#C7CDD4!important;font-weight:700;}
+
+.s3btns{display:flex;gap:8px;flex-wrap:wrap;}
+
+/* --- earnings head columns --- */
+.earn-head>div{padding:16px 26px;display:flex;flex-direction:column;justify-content:center;min-width:0;}
+.earn-head>div:first-child{width:34%;flex:none;}
+.earn-head>div:nth-child(2),.earn-head>div:nth-child(3){width:22%;flex:none;border-left:1px solid #1f242a;}
+.earn-head .el{font-size:11px;color:#77808A;font-weight:700;letter-spacing:.02em;margin-bottom:9px;}
+.earn-head .eb{font-size:19px!important;font-weight:700!important;color:var(--txt)!important;letter-spacing:-.01em;line-height:1.1;}
+.earn-head .detail-btn{margin:auto 20px auto auto;align-self:center;flex:none;}
+@media(max-width:768px){
+  .earn-head{flex-wrap:wrap;}
+  .earn-head>div{width:50%!important;border-left:none!important;padding:13px 16px;}
+  .earn-head .detail-btn{margin:8px 16px 14px auto;}
+}
+
+/* --- subscribe panel columns --- */
+.tls-f{padding:18px 26px;display:flex;flex-direction:column;justify-content:center;min-width:0;}
+.tls-f:not(:first-child){border-left:1px solid #1f242a;}
+.tls-f:nth-child(1){width:30%;flex:none;}
+.tls-f:nth-child(2),.tls-f:nth-child(3){width:23%;flex:none;}
+.tls-f label{font-size:11px;color:#77808A;margin-bottom:10px;font-weight:700;letter-spacing:.02em;}
+.tls-val{font-size:19px;font-weight:700;padding:0;color:var(--txt);line-height:1.1;}
+.tls-val.up{color:var(--txt);}
+.tls-hint{font-size:10.5px;color:#6b747e;margin-top:9px;line-height:1.5;}
+.tls-act{display:flex;gap:10px;margin-left:auto;align-items:center;padding:18px 20px;flex:none;}
+.tls-note{font-size:10.5px;color:#6b747e;padding:0 26px 14px;border-top:1px solid #1f242a;padding-top:11px;margin-top:0;}
+@media(max-width:768px){
+  .tls-in{flex-wrap:wrap;}
+  .tls-f{width:50%!important;border-left:none!important;padding:14px 16px;}
+  .tls-act{width:100%;padding:0 16px 14px;margin-left:0;}
+}
+
+#ac-asset>.panel{margin-bottom:12px;}
+#ac-asset>.panel:last-child{margin-bottom:0;}
+</style>
+</head>
+<body>
+
+<!-- ================= TOP NAV ================= -->
+<nav id="topnav">
+  <button class="icon-btn" id="burger" aria-label="菜单">
+    <svg width="16" height="16" viewBox="0 0 16 16"><path d="M2 4h12M2 8h12M2 12h12" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
+  </button>
+  <div class="logo-wrap">
+    <svg width="34" height="30" viewBox="0 0 68 60">
+      <rect x="2"  y="8"  width="26" height="7" rx="3.5" fill="#00D632"/>
+      <rect x="8"  y="19" width="20" height="7" rx="3.5" fill="#00D632"/>
+      <rect x="13" y="30" width="15" height="7" rx="3.5" fill="#00D632"/>
+      <rect x="18" y="41" width="10" height="7" rx="3.5" fill="#00D632"/>
+      <rect x="40" y="8"  width="26" height="7" rx="3.5" fill="#fff"/>
+      <rect x="40" y="19" width="20" height="7" rx="3.5" fill="#fff"/>
+      <rect x="40" y="30" width="15" height="7" rx="3.5" fill="#fff"/>
+      <rect x="40" y="41" width="10" height="7" rx="3.5" fill="#fff"/>
+      <rect x="31.5" y="10" width="5" height="40" rx="2.5" fill="#1B1F24" stroke="#00D632" stroke-width="1"/>
+      <path d="M34 10 C31 5 27 3 24 2" stroke="#00D632" stroke-width="2" fill="none" stroke-linecap="round"/>
+      <path d="M34 10 C37 5 41 3 44 2" stroke="#fff" stroke-width="2" fill="none" stroke-linecap="round"/>
+    </svg>
+    <span class="wordmark">Fly<b>DEX</b></span>
+  </div>
+  <div class="nav-tabs">
+    <button class="nav-tab active" data-view="v-trade">交易</button>
+    <button class="nav-tab" data-view="v-mkts">行情</button>
+    <button class="nav-tab" data-view="v-square">广场</button>
+    <button class="nav-tab" data-view="v-mint">流动性</button>
+    <button class="nav-tab" data-view="v-agent">我的 Agent</button>
+    <button class="nav-tab" data-view="v-acct">我的账户</button>
+  </div>
+  <div class="more-wrap">
+    <button id="moreBtn">更多 ▾</button>
+    <div class="dd-menu" id="moreMenu">
+      <button class="dd-item"><svg width="14" height="14" viewBox="0 0 14 14"><rect x="1" y="2" width="12" height="8.5" rx="1.5" stroke="currentColor" fill="none"/><path d="M5 12.5h4" stroke="currentColor" stroke-linecap="round"/></svg>微浏览器</button>
+      <button class="dd-item"><svg width="14" height="14" viewBox="0 0 14 14"><path d="M5 3 2 7l3 4M9 3l3 4-3 4" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>API</button>
+      <button class="dd-item"><svg width="14" height="14" viewBox="0 0 14 14"><path d="M7 1.5a4 4 0 0 0-4 4v3L2 10.5h10L11 8.5v-3a4 4 0 0 0-4-4zM5.6 12a1.5 1.5 0 0 0 2.8 0" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>公告</button>
+      <button class="dd-item"><svg width="14" height="14" viewBox="0 0 14 14"><path d="M2 12V7M6 12V3M10 12V5.5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>统计</button>
+      <button class="dd-item"><svg width="14" height="14" viewBox="0 0 14 14"><path d="M3 1.5h5.5L11.5 4.5V12.5h-8.5zM8.5 1.5v3h3" stroke="currentColor" fill="none" stroke-linejoin="round"/></svg>文档</button>
+      <button class="dd-item"><svg width="14" height="14" viewBox="0 0 14 14"><circle cx="7" cy="7" r="2.2" stroke="currentColor" fill="none"/><path d="M7 1v2M7 11v2M1 7h2M11 7h2M2.8 2.8l1.4 1.4M9.8 9.8l1.4 1.4M11.2 2.8 9.8 4.2M4.2 9.8l-1.4 1.4" stroke="currentColor" stroke-linecap="round"/></svg>设置</button>
+      <div class="dd-sep"></div>
+      <button class="dd-item"><svg width="14" height="14" viewBox="0 0 14 14"><path d="M2 8a5 5 0 0 1 10 0M2 8v2.5A1.5 1.5 0 0 0 3.5 12H4V8H2zm10 0v4h-.5A1.5 1.5 0 0 1 10 10.5V8h2z" stroke="currentColor" fill="none" stroke-linejoin="round"/></svg>帮助与客服<i>@FlyDEX888</i></button>
+      <div class="dd-lang"><svg width="14" height="14" viewBox="0 0 14 14"><circle cx="7" cy="7" r="5.5" stroke="currentColor" fill="none"/><path d="M1.5 7h11M7 1.5c-3.2 3.4-3.2 7.6 0 11 3.2-3.4 3.2-7.6 0-11z" stroke="currentColor" fill="none"/></svg>语言
+        <div class="lang-pill"><span>EN</span><span class="on">中文</span></div>
+      </div>
+    </div>
+  </div>
+  <div class="nav-right">
+    <button class="btn-deposit" id="navDeposit">存款</button>
+    <div class="addr-wrap">
+      <button class="addr-pill" id="addrBtn"><span class="avdot"></span><span class="mono">0x16FF...5041</span><span class="car">▼</span></button>
+      <div class="dd-menu addr-menu" id="addrMenu">
+        <button class="dd-item js-copy">复制地址</button>
+        <button class="dd-item" style="color:var(--red);">断开连接</button>
+      </div>
+    </div>
+    <button class="icon-btn" title="微浏览器"><svg width="15" height="15" viewBox="0 0 14 14"><rect x="1" y="2" width="12" height="8.5" rx="1.5" stroke="currentColor" fill="none"/><path d="M5 12.5h4" stroke="currentColor" stroke-linecap="round"/></svg></button>
+    <button class="icon-btn" title="语言"><svg width="15" height="15" viewBox="0 0 14 14"><circle cx="7" cy="7" r="5.5" stroke="currentColor" fill="none"/><path d="M1.5 7h11M7 1.5c-3.2 3.4-3.2 7.6 0 11 3.2-3.4 3.2-7.6 0-11z" stroke="currentColor" fill="none"/></svg></button>
+    <button class="icon-btn" title="设置"><svg width="15" height="15" viewBox="0 0 14 14"><circle cx="7" cy="7" r="2" stroke="currentColor" fill="none"/><path d="M7 1.2v1.8M7 11v1.8M1.2 7H3M11 7h1.8M2.9 2.9l1.3 1.3M9.8 9.8l1.3 1.3M11.1 2.9 9.8 4.2M4.2 9.8l-1.3 1.3" stroke="currentColor" stroke-linecap="round"/></svg></button>
+  </div>
+</nav>
+
+<!-- ================= STATUS STRIP ================= -->
+<div id="statusbar">
+  <span>结算于 <b>NECO Chain</b></span>
+  <span>区块高度 <b class="mono">#8,412,309</b></span>
+  <span class="hide-m">TPS <b class="mono">4,812</b></span>
+  <span class="hide-m">Gas <b class="mono">0.001</b></span>
+  <span class="conn"><span class="livedot"></span>已连接</span>
+</div>
+
+<!-- ================= DRAWER (mobile) ================= -->
+<div id="drawerBg"></div>
+<div id="drawer">
+  <div class="logo-wrap"><span class="wordmark">Fly<b>DEX</b></span></div>
+  <div class="dr-nav">
+    <button class="nav-tab active" data-view="v-trade">交易</button>
+    <button class="nav-tab" data-view="v-mkts">行情</button>
+    <button class="nav-tab" data-view="v-square">广场</button>
+    <button class="nav-tab" data-view="v-mint">流动性</button>
+    <button class="nav-tab" data-view="v-agent">我的 Agent</button>
+    <button class="nav-tab" data-view="v-acct">我的账户</button>
+  </div>
+  <div class="dr-sec">更多</div>
+  <button class="dd-item">微浏览器</button>
+  <button class="dd-item">API</button>
+  <button class="dd-item">公告</button>
+  <button class="dd-item">统计</button>
+  <button class="dd-item">文档</button>
+  <button class="dd-item">设置</button>
+  <button class="dd-item">帮助与客服<i>@FlyDEX888</i></button>
+  <div class="dd-lang">语言<div class="lang-pill"><span>EN</span><span class="on">中文</span></div></div>
+</div>
+
+<div id="app">
+
+<!-- ================= VIEW 1 交易 ================= -->
+<section id="v-trade" class="view on">
+  <div class="wrap">
+    <div class="panel pairbar">
+      <div class="pair-sel" id="pairSel">
+        <svg width="20" height="20" viewBox="0 0 68 60"><rect x="2" y="8" width="26" height="7" rx="3.5" fill="#00D632"/><rect x="8" y="19" width="20" height="7" rx="3.5" fill="#00D632"/><rect x="13" y="30" width="15" height="7" rx="3.5" fill="#00D632"/><rect x="18" y="41" width="10" height="7" rx="3.5" fill="#00D632"/><rect x="40" y="8" width="26" height="7" rx="3.5" fill="#fff"/><rect x="40" y="19" width="20" height="7" rx="3.5" fill="#fff"/><rect x="40" y="30" width="15" height="7" rx="3.5" fill="#fff"/><rect x="40" y="41" width="10" height="7" rx="3.5" fill="#fff"/><rect x="31.5" y="10" width="5" height="40" rx="2.5" fill="#1B1F24"/></svg>
+        <span class="pair-name">EDEX / USDT</span>
+        <i class="caret"></i>
+      </div>
+      <div class="px-big up mono" id="pxBig"><span id="pxNow">0.1984</span> <span id="pxPct" style="font-size:13px;">+2.35%</span></div>
+      <div class="stat"><i>24h 最高</i><b class="mono">0.2011</b></div>
+      <div class="stat"><i>24h 最低</i><b class="mono">0.1899</b></div>
+      <div class="stat"><i>24h 成交量</i><b class="mono">4.2M USDT</b></div>
+      <div class="stat hide-m"><i>资金费率 / 8h</i><b class="mono up">0.0042%</b></div>
+      <div class="stat hide-m"><i>标记价格</i><b class="mono">0.1986</b></div>
+      <div class="mkt-chips">
+        <button class="chip mkt on" data-mkt="spot">现货</button>
+        <button class="chip mkt" data-mkt="uperp">U本位合约</button>
+        <button class="chip mkt" data-mkt="cperp">币本位合约</button>
+      </div>
+      <!-- pair dropdown -->
+      <div id="pairDD">
+        <div class="pdd-tabs">
+          <button class="pdd-tab on" id="ddTabAll">所有代币</button>
+          <button class="pdd-tab" id="ddTabRank">排行榜</button>
+        </div>
+        <div class="pdd-list" id="ddListAll"></div>
+        <div class="pdd-list" id="ddListRank" style="display:none;"></div>
+      </div>
+    </div>
+
+    <div class="trade-grid">
+      <div class="panel chart-panel">
+        <div class="tf-row">
+          <button class="tf">1m</button><button class="tf">5m</button>
+          <button class="tf on">15m</button><button class="tf">1H</button>
+          <button class="tf">4H</button><button class="tf">1D</button>
+          <span style="margin-left:auto;font-size:11px;color:var(--muted);">MA(7) <b style="color:#f0c04d;">0.1961</b> &nbsp;·&nbsp; K线 · EDEX/USDT</span>
+        </div>
+        <div id="chartbox" style="position:relative;"><svg id="chartsvg" preserveAspectRatio="none"></svg><div id="ohlcTip"></div></div>
+      </div>
+
+      <div style="display:flex;flex-direction:column;gap:10px;">
+        <div class="panel ob-panel">
+          <div class="panel-h">订单簿 <span style="margin-left:auto;font-size:11px;color:var(--muted);font-weight:400;">0.0001</span></div>
+          <div class="ob-head"><span>价格(USDT)</span><span style="text-align:right;">数量(EDEX)</span><span style="text-align:right;">累计</span></div>
+          <div id="asks"></div>
+          <div class="ob-spread"><b class="up mono" id="obLast">0.1984</b><span class="muted" style="font-size:11px;">价差 0.0002 (0.01%)</span></div>
+          <div id="bids"></div>
+        </div>
+        <div class="panel">
+          <div class="panel-h">最新成交</div>
+          <div class="ob-head"><span>时间</span><span style="text-align:right;">价格</span><span style="text-align:right;">数量</span></div>
+          <div class="trades-list" id="trades"></div>
+        </div>
+      </div>
+
+      <div class="panel order-panel">
+        <div class="ot-tabs">
+          <button class="ot-tab on">限价</button>
+          <button class="ot-tab">市价</button>
+          <button class="ot-tab">止损</button>
+        </div>
+        <div class="side-toggle">
+          <button class="side-btn buy on" id="btnBuy">买入</button>
+          <button class="side-btn sell" id="btnSell">卖出</button>
+        </div>
+        <div class="fld">
+          <label><span>价格</span><span>≈ $0.1984</span></label>
+          <div class="inp"><input value="0.1984" class="mono"><em>USDT</em></div>
+        </div>
+        <div class="fld">
+          <label><span>数量</span><span class="muted">≈ 992.06 EDEX</span></label>
+          <div class="inp"><input placeholder="0.00" class="mono"><em>EDEX</em></div>
+        </div>
+        <div class="pct-row">
+          <button class="pct">25%</button><button class="pct on">50%</button>
+          <button class="pct">75%</button><button class="pct">100%</button>
+        </div>
+        <div id="levBlock">
+          <div class="lev-head"><span>杠杆倍数</span><b id="levVal">10x</b></div>
+          <input type="range" id="levRange" min="2" max="20" value="10">
+          <div class="lev-marks"><span>2x</span><span>5x</span><span>10x</span><span>15x</span><span>20x</span></div>
+        </div>
+        <div class="tif-row">
+          <label><input type="checkbox" checked>Post-Only</label>
+          <label><input type="checkbox">IOC</label>
+          <label><input type="checkbox">FOK</label>
+        </div>
+        <button class="cta buy" id="ctaBtn">买入 EDEX</button>
+        <div class="fee-note">
+          手续费&nbsp; Maker <b class="mk">-0.10%</b>（返还） / Taker <b>0.45%</b><br>
+          可用&nbsp; <b class="mono">12,450.00 USDT</b>
+        </div>
+      </div>
+    </div>
+
+    <div class="panel bottom-strip">
+      <div class="bs-tabs">
+        <button class="bs-tab on" data-pane="p-open">当前委托 (2)</button>
+        <button class="bs-tab" data-pane="p-pos">持仓 (1)</button>
+        <button class="bs-tab" data-pane="p-hist">历史成交</button>
+        <button class="bs-tab" data-pane="p-flow">资金流水</button>
+      </div>
+      <div class="bs-pane on" id="p-open">
+        <table class="tbl">
+          <thead><tr><th>时间</th><th>交易对</th><th>方向</th><th>类型</th><th class="r">价格</th><th class="r">数量</th><th class="r">已成交</th><th class="r">操作</th></tr></thead>
+          <tbody>
+            <tr><td class="muted mono">08-11 14:02:11</td><td>EDEX/USDT</td><td><span class="tag buy">买入</span></td><td>限价</td><td class="r mono">0.1960</td><td class="r mono">5,000</td><td class="r mono muted">0%</td><td class="r"><button class="mini-btn">撤单</button></td></tr>
+            <tr><td class="muted mono">08-11 13:47:36</td><td>NECO/USDT</td><td><span class="tag sell">卖出</span></td><td>限价</td><td class="r mono">1.0850</td><td class="r mono">1,200</td><td class="r mono muted">32%</td><td class="r"><button class="mini-btn">撤单</button></td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="bs-pane" id="p-pos">
+        <table class="tbl">
+          <thead><tr><th>合约</th><th>方向</th><th class="r">杠杆</th><th class="r">持仓量</th><th class="r">开仓均价</th><th class="r">标记价</th><th class="r">未实现盈亏</th><th class="r">操作</th></tr></thead>
+          <tbody>
+            <tr><td>EDEX-USDT 永续</td><td><span class="tag buy">多</span></td><td class="r mono">10x</td><td class="r mono">20,000 EDEX</td><td class="r mono">0.1912</td><td class="r mono">0.1986</td><td class="r mono up">+148.00 USDT (+7.74%)</td><td class="r"><button class="mini-btn">平仓</button></td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="bs-pane" id="p-hist">
+        <table class="tbl">
+          <thead><tr><th>时间</th><th>交易对</th><th>方向</th><th class="r">价格</th><th class="r">数量</th><th class="r">手续费</th><th class="r">角色</th></tr></thead>
+          <tbody>
+            <tr><td class="muted mono">08-11 11:20:04</td><td>EDEX/USDT</td><td><span class="tag buy">买入</span></td><td class="r mono">0.1938</td><td class="r mono">8,000</td><td class="r mono up">-1.55 USDT（Maker返还）</td><td class="r">Maker</td></tr>
+            <tr><td class="muted mono">08-10 22:05:41</td><td>EDEX/USDT</td><td><span class="tag sell">卖出</span></td><td class="r mono">0.1951</td><td class="r mono">3,500</td><td class="r mono">3.07 USDT</td><td class="r">Taker</td></tr>
+            <tr><td class="muted mono">08-10 16:44:19</td><td>BTC-USDT 永续</td><td><span class="tag buy">买入</span></td><td class="r mono">118,240.5</td><td class="r mono">0.05 BTC</td><td class="r mono">2.66 USDT</td><td class="r">Taker</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="bs-pane" id="p-flow">
+        <table class="tbl">
+          <thead><tr><th>时间</th><th>类型</th><th>币种</th><th class="r">数量</th><th class="r">状态</th></tr></thead>
+          <tbody>
+            <tr><td class="muted mono">08-11 09:12:53</td><td>铸币发放</td><td>EDEX</td><td class="r mono up">+468.00</td><td class="r up">已到账</td></tr>
+            <tr><td class="muted mono">08-10 20:31:07</td><td>存款</td><td>USDT</td><td class="r mono up">+5,000.00</td><td class="r up">已到账</td></tr>
+            <tr><td class="muted mono">08-09 15:02:48</td><td>提现</td><td>EDEX</td><td class="r mono down">-2,000.00</td><td class="r muted">已完成</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ================= VIEW 2 行情 ================= -->
+<section id="v-mkts" class="view">
+  <div class="wrap">
+    <h2 class="vh">行情总览</h2>
+    <div class="mkts-bar">
+      <button class="sub-tab on" data-mf="all">全部</button>
+      <button class="sub-tab" data-mf="fav">我的关注</button>
+      <button class="sub-tab" data-mf="main">主推</button>
+      <button class="sub-tab" data-mf="major">主流</button>
+      <button class="sub-tab" data-mf="spot">现货</button>
+      <button class="sub-tab" data-mf="perp">永续</button>
+      <div class="search-box">
+        <svg width="13" height="13" viewBox="0 0 14 14"><circle cx="6" cy="6" r="4.2" stroke="currentColor" fill="none"/><path d="M9.2 9.2 12.5 12.5" stroke="currentColor" stroke-linecap="round"/></svg>
+        <input id="mktSearch" placeholder="搜索币种，如 EDEX / BTC">
+      </div>
+    </div>
+    <div class="panel">
+      <table class="tbl" id="mktTbl">
+        <thead><tr>
+          <th style="width:30px;"></th><th>市场</th><th class="hide-m">走势(24h)</th><th class="r">价格</th><th class="r">24h 涨跌</th>
+          <th class="r hide-m">24h 成交量</th><th class="r hide-m">资金费率</th><th class="r hide-m">最高杠杆</th><th class="r">操作</th>
+        </tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+  </div>
+</section>
+
+<!-- ================= VIEW 3 广场（排行榜） ================= -->
+<section id="v-square" class="view">
+  <div class="wrap">
+    <h2 class="vh">广场</h2>
+    <div class="sq-grid" style="align-items:start;">
+      <div>
+        <div class="sub-tabs">
+          <button class="sub-tab on" data-lb="profit">收益榜</button>
+          <button class="sub-tab" data-lb="mint">铸币榜</button>
+          <button class="sub-tab" data-lb="follow">我的关注</button>
+        </div>
+        <div class="spot-row" id="spotRow"></div>
+        <div class="panel">
+          <table class="tbl" id="lbTbl">
+            <thead><tr>
+              <th style="width:60px;">排名</th><th>用户</th>
+              <th class="r" id="lbStatHead">30日收益率</th>
+              <th class="r hide-m" style="width:150px;">走势</th>
+              <th class="r" style="width:110px;">操作</th>
+            </tr></thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </div>
+      <div class="panel">
+        <div class="panel-h">动态 <span style="margin-left:auto;font-weight:400;font-size:11.5px;color:var(--muted);">实时</span></div>
+        <div id="feedList"></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ================= VIEW 4 流动性 ================= -->
+<section id="v-mint" class="view">
+  <div class="wrap">
+    <h2 class="vh">流动性</h2>
+    <div class="sub-tabs">
+      <button class="sub-tab on" data-lq="lq-prod">流动性铸币产品</button>
+      <button class="sub-tab" data-lq="lq-order">我的产品</button>
+      <button class="sub-tab" data-lq="lq-rec">记录</button>
+    </div>
+
+    <!-- tab 1: products -->
+    <div class="sub-pane on" id="lq-prod">
+      <div class="panel mint-summary">
+        <div class="ms-item"><b>0.4% / 日</b><i>基础铸造速率（名义）</i></div>
+        <div class="ms-item"><b>最高 ×2.5</b><i>加速系数上限</i></div>
+        <div class="ms-item gauge">
+          <div style="display:flex;justify-content:space-between;"><i style="font-style:normal;font-size:11.5px;color:var(--muted);">承接覆盖率</i><b style="font-size:13px;color:var(--green2);">96%</b></div>
+          <div class="bar"><span></span></div>
+        </div>
+        <div class="ms-item"><b>3.2M USDT</b><i>底池规模（链上可查）</i></div>
+        <div class="ms-item" style="margin-left:auto;"><b style="color:var(--txt);">EDEX 0.1984</b><i>当前币价参考</i></div>
+      </div>
+      <div class="panel" id="tierGrid"></div>
+      <div class="mint-foot">
+        * 名义年化按<b style="color:var(--txt);">币本位口径</b>计算，即以 EDEX 计的铸造产出相对认购本金的名义比率，并<b style="color:var(--txt);">假设币价不变</b>折算展示；实际回报随币价、加速系数与承接情况浮动。<br>
+        * 以上数据仅为机制演示，<b style="color:var(--txt);">不构成任何收益承诺或投资建议</b>。铸造产出提现适用 10% 提现手续费，链上规则公开可查。
+      </div>
+    </div>
+
+    <!-- tab 2: my order -->
+    <div class="sub-pane" id="lq-order">
+      <div class="sum3">
+        <div class="panel s3">
+          <div class="s3l">进行中订单 · 认购总额</div>
+          <div class="s3b mono">41,000 <span>USDT</span></div>
+          <div class="s3d">共 3 笔订单进行中</div>
+        </div>
+        <div class="panel s3">
+          <div class="s3l">累计铸造 / 今日铸造</div>
+          <div class="s3b mono up">12,384 <span>EDEX</span></div>
+          <div class="s3d">今日 <b class="up">+468 EDEX</b> · 当前加速 <b class="up">×1.3</b></div>
+        </div>
+        <div class="panel s3">
+          <div class="s3l">总铸币余额</div>
+          <div class="s3b mono">12,384 <span>EDEX</span></div>
+          <div class="s3d"><button class="mini-btn" style="color:var(--green2);border-color:var(--green);" id="btnInsure">购买保险开合约</button></div>
+        </div>
+      </div>
+
+      <div id="ordList"></div>
+
+      <div class="panel">
+        <div class="panel-h">每日铸币记录（最近 7 日 · 全部订单合计）</div>
+        <table class="tbl" id="dailyMintTbl">
+          <thead><tr><th>日期</th><th class="r">基础铸造</th><th class="r hide-m">加速</th><th class="r">实铸数量</th><th class="r hide-m">状态</th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+
+    </div>
+
+    <!-- tab 3: records -->
+    <div class="sub-pane" id="lq-rec">
+      <div class="panel">
+        <div class="panel-h">保护 / 保险 申请历史</div>
+        <table class="tbl">
+          <thead><tr><th>时间</th><th>类型</th><th class="r">涉及数量</th><th class="r">条款</th><th class="r">状态</th></tr></thead>
+          <tbody>
+            <tr><td class="muted mono">08-02 10:18:42</td><td>保价护航</td><td class="r mono">468 EDEX</td><td class="r muted">90 天 · 8 折回购</td><td class="r up">保障中（剩余 81 天）</td></tr>
+            <tr><td class="muted mono">08-05 15:40:07</td><td>合约保险</td><td class="r mono">4,700 EDEX</td><td class="r muted">保费 20% · 日返 0.05%</td><td class="r up">返还中</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <!-- price protection modal -->
+  <div class="modal-bg" id="mProtect">
+    <div class="modal">
+      <h3>申请价格保护 · 90 天保价护航<span data-close="mProtect">✕</span></h3>
+      <div class="plain-note" style="margin-bottom:14px;">
+        自申请之日起 <b>90 天</b>内，若当日铸币按市价折算<b>低于您入场折币价的 8 折</b>，
+        可按 <b>8 折价格</b>由平准基金回购当日铸币。<br>
+        · 回购以<b>平准基金余额为限</b>，先到先得；<br>
+        · 本次申请覆盖订单 <b class="mono" id="protOrderNo">#ORD-20260622-014</b> 的当日铸币（入场折币价 0.1620，8 折线 0.1296）。
+      </div>
+      <button class="btn-g w-full" data-close="mProtect">确认申请</button>
+    </div>
+  </div>
+
+  <!-- insurance modal -->
+  <div class="modal-bg" id="mInsure">
+    <div class="modal">
+      <h3>购买保险开合约<span data-close="mInsure">✕</span></h3>
+      <div class="plain-note">
+        用<b>铸币余额</b>直接开立币本位合约：<br>
+        · 开仓时缴纳 <b>20% 保费</b>进入保险池；<br>
+        · 若仓位<b>全部亏损</b>，保险池按 <b>每日 0.05%</b> 持续返还，直至返完；<br>
+        · 让你敢用铸币做交易，最坏情况也有兜底。
+      </div>
+      <div class="m-fld">
+        <label>开仓数量（可用铸币余额 12,384 EDEX）</label>
+        <div class="inp"><input placeholder="0" class="mono" value="5,000"><em>EDEX</em></div>
+      </div>
+      <div class="plain-note" style="margin-top:10px;">预计保费：<b class="mono">1,000 EDEX</b>（计入保险池）</div>
+      <button class="btn-g w-full" data-close="mInsure">确认开仓</button>
+    </div>
+  </div>
+</section>
+
+<!-- ================= VIEW 5 我的 Agent ================= -->
+<section id="v-agent" class="view">
+  <div class="wrap">
+    <h2 class="vh">我的 Agent · 小蝶</h2>
+    <div class="agent-grid">
+      <div class="panel">
+        <div class="eddy-box">
+          <svg width="150" height="140" viewBox="0 0 150 140">
+            <circle class="eddy-glow" cx="75" cy="74" r="56" fill="none" stroke="#00E63A" stroke-width="2" opacity=".5"/>
+            <path d="M64 26 C60 16 52 12 46 10" stroke="#00D632" stroke-width="3" fill="none" stroke-linecap="round"/>
+            <path d="M86 26 C90 16 98 12 104 10" stroke="#00D632" stroke-width="3" fill="none" stroke-linecap="round"/>
+            <circle cx="45" cy="9" r="4" fill="#00E63A"/><circle cx="105" cy="9" r="4" fill="#00E63A"/>
+            <rect x="8"  y="52" width="30" height="8" rx="4" fill="#00D632"/>
+            <rect x="14" y="66" width="24" height="8" rx="4" fill="#00D632" opacity=".85"/>
+            <rect x="20" y="80" width="18" height="8" rx="4" fill="#00D632" opacity=".7"/>
+            <rect x="112" y="52" width="30" height="8" rx="4" fill="#fff"/>
+            <rect x="112" y="66" width="24" height="8" rx="4" fill="#fff" opacity=".85"/>
+            <rect x="112" y="80" width="18" height="8" rx="4" fill="#fff" opacity=".7"/>
+            <circle cx="75" cy="74" r="40" fill="#1B1F24" stroke="#262B33" stroke-width="2"/>
+            <circle cx="61" cy="66" r="7" fill="#00E63A"/><circle cx="89" cy="66" r="7" fill="#00E63A"/>
+            <circle cx="63" cy="64" r="2.4" fill="#0E1114"/><circle cx="91" cy="64" r="2.4" fill="#0E1114"/>
+            <path d="M60 88 Q75 100 90 88" stroke="#00E63A" stroke-width="4" fill="none" stroke-linecap="round"/>
+          </svg>
+          <div class="eddy-status"><span class="livedot"></span>做市中 · 脉动</div>
+        </div>
+        <div class="a-stats">
+          <div class="a-row"><i>总额度（全部产品）</i><b class="mono">121,000 EDEX</b></div>
+          <div class="a-row"><i>已铸造</i><b class="mono up">12,384 EDEX</b></div>
+          <div class="a-row"><i>今日铸造</i><b class="mono up">+468 EDEX</b></div>
+          <div class="a-row"><i>当前加速</i><b class="up">×1.3</b></div>
+          <div class="a-row"><i>铸造进度</i><b>13.8%</b></div>
+          <div class="pbar"><span></span></div>
+        </div>
+      </div>
+
+      <div class="panel">
+        <div class="panel-h">做市子账户 <span style="margin-left:auto;font-weight:400;font-size:11.5px;color:var(--muted);">24h 成交 <b style="color:var(--green2);">214 笔</b> · 链上可查</span></div>
+        <table class="tbl">
+          <thead><tr><th>仓位</th><th class="r">数量</th><th class="r">均价</th><th class="r">浮动盈亏</th></tr></thead>
+          <tbody>
+            <tr><td>EDEX（做市库存）</td><td class="r mono">42,180</td><td class="r mono">0.1952</td><td class="r mono up">+134.97 USDT</td></tr>
+            <tr><td>USDT（做市余额）</td><td class="r mono">8,236.40</td><td class="r mono">—</td><td class="r mono muted">—</td></tr>
+          </tbody>
+        </table>
+        <div class="panel-h" style="border-top:1px solid var(--line);">当前挂单</div>
+        <table class="tbl">
+          <thead><tr><th>方向</th><th class="r">价格</th><th class="r">数量</th><th class="r">距中间价</th><th class="r">状态</th></tr></thead>
+          <tbody>
+            <tr><td><span class="tag buy">买入</span></td><td class="r mono up">0.1982</td><td class="r mono">6,500</td><td class="r mono">-0.10%</td><td class="r up">挂单中</td></tr>
+            <tr><td><span class="tag sell">卖出</span></td><td class="r mono down">0.1987</td><td class="r mono">6,500</td><td class="r mono">+0.15%</td><td class="r up">挂单中</td></tr>
+            <tr><td><span class="tag buy">买入</span></td><td class="r mono up">0.1975</td><td class="r mono">12,000</td><td class="r mono">-0.45%</td><td class="r up">挂单中</td></tr>
+            <tr><td><span class="tag sell">卖出</span></td><td class="r mono down">0.1995</td><td class="r mono">12,000</td><td class="r mono">+0.55%</td><td class="r up">挂单中</td></tr>
+          </tbody>
+        </table>
+        <div style="padding:12px;font-size:11.5px;color:var(--muted);line-height:1.7;">
+          策略：网格双边做市 · 点差 0.25% · 库存再平衡阈值 ±15%。所有成交由链上撮合，任何人可验证。
+        </div>
+      </div>
+
+      <div class="panel chatbox">
+        <div class="panel-h">L4 对话交易 · 预览 <span style="margin-left:auto;font-size:10.5px;color:var(--muted);font-weight:400;">Beta 内测</span></div>
+        <div id="chatlog">
+          <div class="bub user">今天赚了多少？</div>
+          <div class="bub eddy">今日已铸 468 EDEX，做市成交 214 笔，明细已生成 📊</div>
+        </div>
+        <div class="chat-in">
+          <input id="chatInput" placeholder="对 小蝶 说点什么…">
+          <button id="chatSend">发送</button>
+        </div>
+      </div>
+    </div>
+    <div class="lvl-tags">
+      <span class="ltag live">L1 透明做市（现已上线）</span>
+      <span class="ltag">L2 自动交易</span>
+      <span class="ltag">L3 可换大脑</span>
+      <span class="ltag off">L4 对话交易（后期开放）</span>
+    </div>
+  </div>
+</section>
+
+<!-- ================= VIEW 6 我的账户 ================= -->
+<section id="v-acct" class="view">
+  <div class="wrap">
+    <h2 class="vh">我的账户</h2>
+    <div class="panel profile-card">
+      <svg class="iden" viewBox="0 0 5 5" shape-rendering="crispEdges">
+        <rect width="5" height="5" fill="#1B1F24"/>
+        <g fill="#00D632">
+          <rect x="0" y="0" width="1" height="1"/><rect x="4" y="0" width="1" height="1"/>
+          <rect x="2" y="1" width="1" height="1"/><rect x="1" y="2" width="1" height="1"/>
+          <rect x="3" y="2" width="1" height="1"/><rect x="0" y="3" width="1" height="1"/>
+          <rect x="4" y="3" width="1" height="1"/><rect x="2" y="3" width="1" height="1"/>
+          <rect x="1" y="4" width="1" height="1"/><rect x="3" y="4" width="1" height="1"/>
+        </g>
+      </svg>
+      <div>
+        <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
+          <b class="mono" style="font-size:15px;">0x16FF...5041</b>
+          <button class="copy-btn js-copy" style="padding:4px 12px;">复制</button>
+          <span class="badge-lvl">N2</span>
+        </div>
+        <div class="muted" style="font-size:11.5px;margin-top:6px;">连接于 NECO Chain · 私钥自持钱包</div>
+      </div>
+      <div style="margin-left:auto;display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
+        <span class="muted" style="font-size:11.5px;">我的邀请码</span>
+        <code class="mono" style="background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:8px 14px;font-weight:700;font-size:14px;color:var(--green2);">FLY8834</code>
+        <button class="copy-btn js-copy">复制</button>
+        <button class="btn-o" style="padding:6px 16px;">分享</button>
+      </div>
+    </div>
+
+    <div class="sub-tabs">
+      <button class="sub-tab on" data-acct="ac-asset">我的资产</button>
+      <button class="sub-tab" data-acct="ac-team">团队</button>
+      <button class="sub-tab" data-acct="ac-earn">我的收益</button>
+    </div>
+
+    <!-- 我的资产 -->
+    <div class="sub-pane on" id="ac-asset">
+      <div class="panel asset-top">
+        <div class="asset-total">
+          <i>总资产估值</i>
+          <b class="mono">23,847.52 <span style="font-size:15px;color:var(--muted);font-weight:600;">USDT</span></b>
+          <i class="up">≈ 今日 +2.1%</i>
+        </div>
+        <div class="asset-btns">
+          <button class="btn-g" id="btnDeposit">存款</button>
+          <button class="btn-o" id="btnWithdraw">提现</button>
+          <button class="btn-o">划转</button>
+        </div>
+      </div>
+      <div class="panel">
+        <table class="tbl">
+          <thead><tr><th>币种</th><th class="r">可用</th><th class="r">冻结</th><th class="r">估值 (USDT)</th><th class="r">操作</th></tr></thead>
+          <tbody>
+            <tr><td><span class="coin-ic" style="background:#26A17B;color:#fff;">T</span>USDT</td><td class="r mono">12,450.00</td><td class="r mono muted">980.00</td><td class="r mono">13,430.00</td><td class="r"><button class="mini-btn" style="color:var(--green2);border-color:var(--green);">交易</button></td></tr>
+            <tr><td><span class="coin-ic" style="background:#00D632;">E</span>EDEX</td><td class="r mono">38,120.00</td><td class="r mono muted">5,000.00</td><td class="r mono">8,555.01</td><td class="r"><button class="mini-btn" style="color:var(--green2);border-color:var(--green);">交易</button></td></tr>
+            <tr><td><span class="coin-ic" style="background:#1F7A3D;color:#fff;">N</span>NECO</td><td class="r mono">1,240.55</td><td class="r mono muted">0.00</td><td class="r mono">1,345.99</td><td class="r"><button class="mini-btn" style="color:var(--green2);border-color:var(--green);">交易</button></td></tr>
+            <tr><td><span class="coin-ic" style="background:#F7931A;color:#fff;">₿</span>BTC</td><td class="r mono">0.0043</td><td class="r mono muted">0.0000</td><td class="r mono">516.52</td><td class="r"><button class="mini-btn" style="color:var(--green2);border-color:var(--green);">交易</button></td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="panel">
+        <div class="panel-h">投资组合 <span style="margin-left:auto;font-weight:400;font-size:11.5px;color:var(--muted);">近 30 日 · 交易统计</span></div>
+        <div class="pf-grid">
+          <div class="pf"><i>累计成交额</i><b class="mono">1,284,600 <span>USDT</span></b></div>
+          <div class="pf"><i>已实现盈亏</i><b class="mono up">+18,472 <span>USDT</span></b></div>
+          <div class="pf"><i>未实现盈亏</i><b class="mono up">+2,146 <span>USDT</span></b></div>
+          <div class="pf"><i>成交笔数</i><b class="mono">1,842</b></div>
+          <div class="pf"><i>胜率</i><b class="mono">58.4<span>%</span></b></div>
+          <div class="pf"><i>最大回撤</i><b class="mono down">-12.6<span>%</span></b></div>
+          <div class="pf"><i>当前费率</i><b class="mono">Maker <span class="up">-0.10%</span> / Taker 0.45%</b></div>
+          <div class="pf"><i>累计手续费返佣</i><b class="mono up">+18,472 <span>EDEX</span></b></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 团队 -->
+    <div class="sub-pane" id="ac-team">
+      <div class="panel team-line">
+        <span>直推 <b>8 人</b></span>
+        <span>团队 <b>126 人</b></span>
+        <span>当前等级 <b class="up">N2</b></span>
+        <span class="tl-prog">升级 N3 进度 <span class="pbar"><span style="width:33.7%;"></span></span> <b>33.7%</b>
+          <span class="muted">还需业绩 165,700 USDT</span></span>
+      </div>
+      <div class="team-cards">
+        <div class="panel tc"><i>团队总流动性</i><b class="mono up">1,264,000</b><u>USDT</u></div>
+        <div class="panel tc"><i>今日新增人数</i><b class="mono">6</b><u>人</u></div>
+        <div class="panel tc"><i>今日新增流动性</i><b class="mono up">42,300</b><u>USDT</u></div>
+        <div class="panel tc"><i>团队总手续费</i><b class="mono">86,420</b><u>USDT</u></div>
+        <div class="panel tc"><i>今日新增手续费</i><b class="mono up">3,180</b><u>USDT</u></div>
+      </div>
+      <div class="panel">
+        <div class="panel-h" style="gap:10px;">
+          <div class="crumb" id="teamCrumb"></div>
+          <button class="btn-back" id="teamBack" style="display:none;">‹ 返回上一级</button>
+        </div>
+        <div id="teamBody"></div>
+      </div>
+    </div>
+
+    <!-- 我的收益 -->
+    <div class="sub-pane" id="ac-earn">
+      <div class="sum3">
+        <div class="panel s3">
+          <div class="s3l">总收益（累计）</div>
+          <div class="s3b mono">32,140 <span>EDEX</span></div>
+          <div class="s3d">≈ 6,376 USDT · 含铸币 / 返佣 / 团队奖励</div>
+        </div>
+        <div class="panel s3">
+          <div class="s3l">今日收益</div>
+          <div class="s3b mono">+712 <span>EDEX</span></div>
+          <div class="s3d">铸币 +468 · 返佣 +164 · 团队 +80</div>
+        </div>
+        <div class="panel s3">
+          <div class="s3l">待提收益</div>
+          <div class="s3b mono">4,320 <span>EDEX</span></div>
+          <div class="s3d s3btns">
+            <button class="mini-btn" style="color:var(--green2);border-color:var(--green);" id="btnWithdraw2">提现</button>
+            <button class="mini-btn" style="color:var(--green2);border-color:var(--green);" id="btnInsure2">购买保险开合约</button>
+          </div>
+        </div>
+      </div>
+      <!-- ① 流动性产品收益 -->
+      <div class="panel earn-block">
+        <div class="earn-head">
+          <div><div class="el">流动性产品收益 · 累计</div><div class="eb mono">12,384 EDEX</div></div>
+          <div><div class="el">本周</div><div class="eb mono" style="font-size:17px;">+3,276 EDEX</div></div>
+          <div><div class="el">今日</div><div class="eb mono up" style="font-size:17px;">+468 EDEX</div></div>
+          <button class="detail-btn" data-det="det-mint">查看明细 ▾</button>
+        </div>
+        <div class="earn-detail" id="det-mint">
+          <table class="tbl" id="earnMintTbl">
+            <thead><tr><th>日期</th><th class="r">基础铸造</th><th class="r">加速</th><th class="r">实铸数量</th><th class="r">状态</th></tr></thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </div>
+      <!-- ② 返佣 -->
+      <div class="panel earn-block">
+        <div class="earn-head">
+          <div><div class="el">返佣 · 累计</div><div class="eb mono">18,472 EDEX</div></div>
+          <div><div class="el">本周</div><div class="eb mono" style="font-size:17px;">+1,284 EDEX</div></div>
+          <div><div class="el">今日</div><div class="eb mono up" style="font-size:17px;">+164 EDEX</div></div>
+          <button class="detail-btn" data-det="det-rebate">查看明细 ▾</button>
+        </div>
+        <div class="earn-detail" id="det-rebate">
+          <table class="tbl">
+            <thead><tr><th>时间</th><th>来源用户</th><th class="r">交易手续费</th><th class="r">返佣比例</th><th class="r">金额 (EDEX)</th></tr></thead>
+            <tbody>
+              <tr><td class="muted mono">08-11 14:22:08</td><td class="mono">neco1q…4wz3</td><td class="r mono">36.40 USDT</td><td class="r">50%</td><td class="r mono up">+91.7</td></tr>
+              <tr><td class="muted mono">08-11 11:05:31</td><td class="mono">neco1x…m9k7</td><td class="r mono">21.06 USDT</td><td class="r">50%</td><td class="r mono up">+53.1</td></tr>
+              <tr><td class="muted mono">08-10 19:48:56</td><td class="mono">neco1t…p2c8</td><td class="r mono">48.92 USDT</td><td class="r">50%</td><td class="r mono up">+123.3</td></tr>
+            </tbody>
+          </table>
+        </div>
+      <!-- ③ 团队奖励 -->
+      <div class="panel earn-block">
+        <div class="earn-head">
+          <div><div class="el">团队奖励 · 累计</div><div class="eb mono">8,284 EDEX</div></div>
+          <div><div class="el">本周</div><div class="eb mono" style="font-size:17px;">+642 EDEX</div></div>
+          <div><div class="el">今日</div><div class="eb mono up" style="font-size:17px;">+80 EDEX</div></div>
+          <button class="detail-btn" data-det="det-team">查看明细 ▾</button>
+        </div>
+        <div class="earn-detail" id="det-team">
+          <table class="tbl">
+            <thead><tr><th>时间</th><th>类型</th><th>来源</th><th class="r">金额 (EDEX)</th></tr></thead>
+            <tbody>
+              <tr><td class="muted mono">08-11 09:00:00</td><td><span class="tag buy">直推</span></td><td class="mono">neco1x…m9k7 每日铸造 214 × 10%</td><td class="r mono up">+21.4</td></tr>
+              <tr><td class="muted mono">08-10 09:00:00</td><td><span class="tag buy">级差</span></td><td class="mono">neco1t…p2c8 团队业绩级差</td><td class="r mono up">+58.6</td></tr>
+              <tr><td class="muted mono">08-09 09:00:00</td><td><span class="tag buy">直推</span></td><td class="mono">neco1q…4wz3 每日铸造 312 × 10%</td><td class="r mono up">+31.2</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- deposit modal (friendly 3-step wizard) -->
+  <div class="modal-bg" id="mDeposit">
+    <div class="modal">
+      <h3>存款 · 三步搞定<span data-close="mDeposit">✕</span></h3>
+      <div class="step">
+        <div class="step-n">1</div>
+        <div class="step-b">
+          <div class="st">选择币种</div>
+          <div class="coin-btns">
+            <button class="coin-btn on">USDT</button>
+            <button class="coin-btn">EDEX</button>
+            <button class="coin-btn">NECO</button>
+          </div>
+        </div>
+      </div>
+      <div class="step">
+        <div class="step-n">2</div>
+        <div class="step-b">
+          <div class="st">把币转到这个地址</div>
+          <div class="qr-box"></div>
+          <div class="addr-box">
+            <code class="mono">neco1qf8x7…k29ha4wz30dme6</code>
+          </div>
+          <button class="btn-g w-full js-copy" style="margin-top:10px;">复制地址</button>
+        </div>
+      </div>
+      <div class="step" style="margin-bottom:6px;">
+        <div class="step-n">3</div>
+        <div class="step-b">
+          <div class="st">等待到账</div>
+          <div class="big-note" style="margin:4px 0 8px;">约 10–30 秒自动到账，无需确认</div>
+          <div class="plain-note">
+            只需转 USDT 到上面的地址，到账后余额自动更新。<br>
+            转错链？联系客服 <b>@FlyDEX888</b> 帮你找回。
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- withdraw modal -->
+  <div class="modal-bg" id="mWithdraw">
+    <div class="modal">
+      <h3>提现<span data-close="mWithdraw">✕</span></h3>
+      <div class="m-fld">
+        <label>币种</label>
+        <div class="coin-btns" id="wdCoins">
+          <button class="coin-btn on" data-coin="USDT">USDT</button>
+          <button class="coin-btn" data-coin="EDEX">EDEX</button>
+          <button class="coin-btn" data-coin="NECO">NECO</button>
+        </div>
+        <div class="edex-tip" id="edexTip">平台会收取 10% 提现手续费，其中一半直接销毁，让 EDEX 更稀缺。</div>
+      </div>
+      <div class="m-fld">
+        <label>提现地址</label>
+        <div class="inp"><input placeholder="粘贴或输入地址" class="mono"><em><button class="mini-btn" style="color:var(--green2);border-color:var(--green);">粘贴</button></em></div>
+      </div>
+      <div class="m-fld">
+        <label>金额（可用 12,450.00）</label>
+        <div class="inp"><input placeholder="0.00" class="mono"><em><button class="mini-btn" style="color:var(--green2);border-color:var(--green);">全部</button></em></div>
+      </div>
+      <div class="big-note">预计 1–5 分钟到账</div>
+      <button class="btn-g w-full">确认提现</button>
+    </div>
+  </div>
+</section>
+
+</div>
+
+<script>
+/* ---------- view switching (nav + drawer share .nav-tab) ---------- */
+var navTabs = document.querySelectorAll('.nav-tab');
+navTabs.forEach(function(t){
+  t.addEventListener('click', function(){
+    navTabs.forEach(function(x){x.classList.remove('active');});
+    document.querySelectorAll('.nav-tab[data-view="'+t.dataset.view+'"]').forEach(function(x){x.classList.add('active');});
+    document.querySelectorAll('.view').forEach(function(v){v.classList.remove('on');});
+    document.getElementById(t.dataset.view).classList.add('on');
+    closeDrawer();
+    window.scrollTo(0,0);
+  });
+});
+
+/* ---------- drawer ---------- */
+var drawer=document.getElementById('drawer'),drawerBg=document.getElementById('drawerBg');
+function closeDrawer(){drawer.classList.remove('open');drawerBg.classList.remove('show');}
+document.getElementById('burger').addEventListener('click',function(){
+  drawer.classList.add('open');drawerBg.classList.add('show');
+});
+drawerBg.addEventListener('click',closeDrawer);
+
+/* ---------- dropdown helpers (更多 / address / pair) ---------- */
+function bindMenu(btnId,menuId){
+  var b=document.getElementById(btnId),m=document.getElementById(menuId);
+  b.addEventListener('click',function(e){e.stopPropagation();
+    document.querySelectorAll('.dd-menu.open,#pairDD.open').forEach(function(x){if(x!==m)x.classList.remove('open');});
+    m.classList.toggle('open');});
+  m.addEventListener('click',function(e){e.stopPropagation();});
+}
+bindMenu('moreBtn','moreMenu');
+bindMenu('addrBtn','addrMenu');
+document.addEventListener('click',function(){
+  document.querySelectorAll('.dd-menu.open,#pairDD.open').forEach(function(x){x.classList.remove('open');});
+});
+
+/* ---------- seeded rng ---------- */
+function rng(seed){ var s=seed; return function(){ s=(s*1664525+1013904223)>>>0; return s/4294967296; }; }
+
+/* ---------- coin data ---------- */
+var COINS=[
+  {sym:'wHOM/USDT', typ:'大宗', ic:'H', icbg:'#E8C56A', icc:'#0b0d10', px:'12.480', chg:3.42, vol:'1.6M', fund:'—', lev:'—', main:false, seed:88, star:false},
+  {sym:'xAAPL',     typ:'股票', ic:'A', icbg:'#8A92B2', icc:'#0b0d10', px:'241.60', chg:0.74, vol:'0.9M', fund:'0.0050%', lev:'20×', main:false, seed:99, star:false},
+  {sym:'EDEX/USDT', typ:'现货', ic:'E', icbg:'#00D632', icc:'#0b0d10', px:'0.1984',   chg:2.35, vol:'4.2M',  fund:'0.0042%', lev:'50×',  main:false, seed:11, star:true},
+  {sym:'NECO/USDT', typ:'现货', ic:'N', icbg:'#1F7A3D', icc:'#fff',    px:'1.0852',   chg:5.12, vol:'9.8M',  fund:'0.0061%', lev:'50×',  main:true,  seed:22, star:true},
+  {sym:'BTC-PERP', typ:'合约',  ic:'B', icbg:'#F7931A', icc:'#fff',    px:'118,462.5',chg:1.24, vol:'842M',  fund:'0.0100%', lev:'100×', main:false, seed:33, star:false},
+  {sym:'ETH-PERP', typ:'合约',  ic:'ET',icbg:'#8A92B2', icc:'#0b0d10', px:'4,286.10', chg:-0.86,vol:'516M',  fund:'0.0087%', lev:'100×', main:false, seed:44, star:false},
+  {sym:'SOL-PERP', typ:'合约',  ic:'S', icbg:'#2BC8B7', icc:'#0b0d10', px:'186.42',   chg:3.71, vol:'204M',  fund:'0.0124%', lev:'100×', main:false, seed:55, star:false},
+  {sym:'BNB-PERP', typ:'合约',  ic:'BN',icbg:'#F0B90B', icc:'#0b0d10', px:'808.35',   chg:-1.42,vol:'96M',   fund:'-0.0035%',lev:'75×',  main:false, seed:66, star:false},
+  {sym:'DOGE-PERP', typ:'合约', ic:'D', icbg:'#C2A633', icc:'#0b0d10', px:'0.2318',   chg:6.08, vol:'132M',  fund:'0.0210%', lev:'75×',  main:false, seed:77, star:false},
+  {sym:'HYPE-PERP', typ:'合约', ic:'H', icbg:'#50D2C1', icc:'#0b0d10', px:'43.87',    chg:-2.94,vol:'88M',   fund:'0.0156%', lev:'50×',  main:false, seed:88, star:false}
+];
+function coinIcHtml(d,sz){
+  var s=sz||22;
+  return '<span class="coin-ic" style="width:'+s+'px;height:'+s+'px;background:'+d.icbg+';color:'+d.icc+';">'+d.ic+'</span>';
+}
+function sparkHtml(seed,upTrend,w,h){
+  w=w||120;h=h||36;
+  var r=rng(seed),pts=[],v=h/2+r()*4;
+  for(var i=0;i<28;i++){ v+=(r()-(upTrend?0.42:0.58))*(h/12); v=Math.max(3,Math.min(h-3,v)); pts.push((i*(w/27)).toFixed(1)+','+(h-v).toFixed(1)); }
+  var col=upTrend?'#00E63A':'#FF5C5C';
+  return '<svg class="spark" width="'+w+'" height="'+h+'" viewBox="0 0 '+w+' '+h+'"><polyline points="'+pts.join(' ')+'" fill="none" stroke="'+col+'" stroke-width="1.6" opacity=".9"/></svg>';
+}
+function starHtml(on){return '<button class="star'+(on?' on':'')+'" title="加入我的关注">'+(on?'★':'☆')+'</button>';}
+function bindStars(root){
+  root.querySelectorAll('.star').forEach(function(s){
+    s.addEventListener('click',function(e){
+      e.stopPropagation();
+      s.classList.toggle('on');
+      s.textContent=s.classList.contains('on')?'★':'☆';
+    });
+  });
+}
+
+/* ---------- pair dropdown ---------- */
+(function(){
+  var sel=document.getElementById('pairSel'), dd=document.getElementById('pairDD');
+  sel.addEventListener('click',function(e){e.stopPropagation();
+    document.querySelectorAll('.dd-menu.open').forEach(function(x){x.classList.remove('open');});
+    dd.classList.toggle('open');});
+  dd.addEventListener('click',function(e){e.stopPropagation();});
+  var tA=document.getElementById('ddTabAll'),tR=document.getElementById('ddTabRank'),
+      lA=document.getElementById('ddListAll'),lR=document.getElementById('ddListRank');
+  tA.addEventListener('click',function(){tA.classList.add('on');tR.classList.remove('on');lA.style.display='block';lR.style.display='none';});
+  tR.addEventListener('click',function(){tR.classList.add('on');tA.classList.remove('on');lR.style.display='block';lA.style.display='none';});
+  /* 所有代币 */
+  var h='';
+  COINS.forEach(function(d){
+    var up=d.chg>=0;
+    h+='<div class="pdd-row">'+starHtml(d.star)+coinIcHtml(d)+
+       '<span class="nm">'+d.sym+'</span>'+
+       '<span class="typ-tag">'+(d.typ||'现货')+'</span>'+
+       '<span class="px mono">'+d.px+'</span>'+
+       '<span class="chg mono '+(up?'up':'down')+'">'+(up?'+':'')+d.chg.toFixed(2)+'%</span></div>';
+  });
+  lA.innerHTML=h;
+  /* 排行榜：交易收益排行（用户） */
+  var TRADERS=[
+    {n:'蝶王Alex',b:'N4',pnl:'+128,460',roi:182.4,sd:2101},
+    {n:'巨鲸阿豪',b:'巨鲸档',pnl:'+96,240',roi:141.8,sd:2102},
+    {n:'SatoshiLee',b:'S1',pnl:'+74,180',roi:128.6,sd:2103},
+    {n:'量化老王',b:'N3',pnl:'+52,390',roi:113.2,sd:2104},
+    {n:'币圈小柯',b:'N2',pnl:'+41,140',roi:98.7,sd:2105},
+    {n:'长线阿May',b:'N3',pnl:'+33,870',roi:87.5,sd:2106},
+    {n:'FlyHunter',b:'机构档',pnl:'+28,510',roi:76.3,sd:2107},
+    {n:'夜盘老陈',b:'N2',pnl:'+21,620',roi:64.9,sd:2108}
+  ];
+  var h2='<div class="pdd-rk-h"><span>排名</span><span>交易者</span><span style="margin-left:auto;">30日收益</span><span style="width:64px;text-align:right;">收益率</span></div>';
+  TRADERS.forEach(function(u,i){
+    h2+='<div class="rank-row'+(i<3?' top':'')+'">'+
+      '<span class="rank-num">'+(i+1)+'</span>'+
+      idenHtml(u.sd,20)+
+      '<span class="nm" style="font-weight:600;margin-left:8px;">'+u.n+'</span>'+
+      '<span class="bdg n" style="margin-left:6px;">'+u.b+'</span>'+
+      '<span style="margin-left:auto;">'+sparkHtml(u.sd,true,60,20)+'</span>'+
+      '<span class="rank-chg up mono" style="width:86px;">'+u.pnl+'</span>'+
+      '<span class="rank-vol up" style="width:64px;">+'+u.roi.toFixed(1)+'%</span></div>';
+  });
+  lR.innerHTML=h2;
+  bindStars(dd);
+})();
+
+/* ---------- candlestick chart (uptrend 0.17 → 0.1984 · 实时跳动) ---------- */
+(function(){
+  var r = rng(88112026);
+  var N=60, candles=[], base=0.1758, end=0.1984, prev=base;
+  for(var i=0;i<N;i++){
+    var t=i/(N-1);
+    var trend=base+(end-base)*t;
+    var wave=Math.sin(t*Math.PI*3.2)*0.0015*(1-t*.45);
+    var c=(i===N-1)?end:trend+wave+(r()-0.5)*0.0011;
+    var o=prev;
+    var h=Math.max(o,c)+r()*0.0008, l=Math.min(o,c)-r()*0.0008;
+    var v=0.3+r()*0.7 + (Math.abs(c-o)>0.0010?0.4:0);
+    candles.push({o:o,h:h,l:l,c:c,v:v});
+    prev=c;
+  }
+  var svg=document.getElementById('chartsvg'), box=document.getElementById('chartbox'), tip=document.getElementById('ohlcTip');
+  var W=850,H=430,PADR=54,PADT=22,volH=58,priceH=H-volH-PADT-22, hoverI=-1;
+  function measure(){
+    var r=box.getBoundingClientRect();
+    W=Math.max(420,Math.round(r.width)); H=Math.max(300,Math.round(r.height));
+    priceH=H-volH-PADT-22;
+    svg.setAttribute('viewBox','0 0 '+W+' '+H);
+  }
+  measure();
+  window.addEventListener('resize',function(){measure();draw();});
+  if(window.ResizeObserver){ new ResizeObserver(function(){ measure(); draw(); }).observe(box); }
+  requestAnimationFrame(function(){ measure(); draw(); });
+  var pxNow=document.getElementById('pxNow'), pxPct=document.getElementById('pxPct'),
+      pxBig=document.getElementById('pxBig'), obLast=document.getElementById('obLast');
+
+  function draw(){
+    var lo=Infinity,hi=-Infinity,vmax=0;
+    candles.forEach(function(k){lo=Math.min(lo,k.l);hi=Math.max(hi,k.h);vmax=Math.max(vmax,k.v);});
+    lo-=0.0008;hi+=0.0008;
+    function Y(px){return PADT+(hi-px)/(hi-lo)*priceH;}
+    var cw=(W-PADR-10)/N, bw=cw*0.62, g='';
+    for(var gl=0;gl<=4;gl++){
+      var gp=lo+(hi-lo)*gl/4, gy=Y(gp);
+      g+='<line x1="0" y1="'+gy+'" x2="'+(W-PADR)+'" y2="'+gy+'" stroke="#22272E" stroke-width="1"/>';
+      g+='<text x="'+(W-PADR+7)+'" y="'+(gy+3.5)+'" fill="#77808A" font-size="10">'+gp.toFixed(4)+'</text>';
+    }
+    var maPts=[];
+    candles.forEach(function(k,i){
+      var x=6+i*cw+cw/2, up=k.c>=k.o, col=up?'#00E63A':'#FF5C5C';
+      g+='<line x1="'+x+'" y1="'+Y(k.h)+'" x2="'+x+'" y2="'+Y(k.l)+'" stroke="'+col+'" stroke-width="1"/>';
+      var top=Y(Math.max(k.o,k.c)), bh=Math.max(1.4,Math.abs(Y(k.o)-Y(k.c)));
+      g+='<rect x="'+(x-bw/2)+'" y="'+top+'" width="'+bw+'" height="'+bh+'" fill="'+col+'" rx="1"/>';
+      var vh=k.v/vmax*(volH-8), vy=H-20-vh;
+      g+='<rect x="'+(x-bw/2)+'" y="'+vy+'" width="'+bw+'" height="'+vh+'" fill="'+col+'" opacity=".35" rx="1"/>';
+      if(i>=6){
+        var sm=0; for(var j=i-6;j<=i;j++) sm+=candles[j].c;
+        maPts.push(x.toFixed(1)+','+Y(sm/7).toFixed(1));
+      }
+    });
+    g+='<polyline points="'+maPts.join(' ')+'" fill="none" stroke="#f0c04d" stroke-width="1.4" opacity=".9"/>';
+    var lastC=candles[N-1].c, ly=Y(lastC);
+    g+='<line x1="0" y1="'+ly+'" x2="'+(W-PADR)+'" y2="'+ly+'" stroke="#00E63A" stroke-width="1" stroke-dasharray="4 3" opacity=".7"/>';
+    g+='<rect x="'+(W-PADR+2)+'" y="'+(ly-8)+'" width="46" height="16" rx="3" fill="#00D632"/>';
+    g+='<text x="'+(W-PADR+7)+'" y="'+(ly+3.5)+'" fill="#04240d" font-size="10" font-weight="700">'+lastC.toFixed(4)+'</text>';
+    if(hoverI>=0&&hoverI<N){
+      var hx=6+hoverI*cw+cw/2, k2=candles[hoverI];
+      g+='<line x1="'+hx+'" y1="0" x2="'+hx+'" y2="'+(H-18)+'" stroke="#5c6672" stroke-width="1" stroke-dasharray="3 3"/>';
+      g+='<line x1="0" y1="'+Y(k2.c)+'" x2="'+(W-PADR)+'" y2="'+Y(k2.c)+'" stroke="#5c6672" stroke-width="1" stroke-dasharray="3 3"/>';
+      g+='<rect x="'+(W-PADR+2)+'" y="'+(Y(k2.c)-8)+'" width="46" height="16" rx="3" fill="#3a424c"/>';
+      g+='<text x="'+(W-PADR+7)+'" y="'+(Y(k2.c)+3.5)+'" fill="#E8EAED" font-size="10" font-weight="700">'+k2.c.toFixed(4)+'</text>';
+    }
+    svg.innerHTML=g;
+    var kt=candles[hoverI>=0?hoverI:N-1], uc=kt.c>=kt.o;
+    tip.innerHTML='开<b style="color:'+(uc?'#00E63A':'#FF5C5C')+'">'+kt.o.toFixed(4)+'</b>　高<b style="color:'+(uc?'#00E63A':'#FF5C5C')+'">'+kt.h.toFixed(4)+'</b>　低<b style="color:'+(uc?'#00E63A':'#FF5C5C')+'">'+kt.l.toFixed(4)+'</b>　收<b style="color:'+(uc?'#00E63A':'#FF5C5C')+'">'+kt.c.toFixed(4)+'</b>　量<b>'+(kt.v*1000).toFixed(0)+'</b>';
+  }
+  function sync(){
+    var c=candles[N-1].c, pct=(c-0.1939)/0.1939*100, up=pct>=0;
+    if(pxNow) pxNow.textContent=c.toFixed(4);
+    if(pxPct) pxPct.textContent=(up?'+':'')+pct.toFixed(2)+'%';
+    if(pxBig) pxBig.className='px-big mono '+(up?'up':'down');
+    if(obLast){obLast.textContent=c.toFixed(4);obLast.className='mono '+(up?'up':'down');}
+  }
+  function tick(){
+    var k=candles[N-1];
+    var c=Math.max(0.1908,Math.min(0.2052,k.c+(Math.random()-0.5)*0.0017));
+    k.c=c; k.h=Math.max(k.h,c); k.l=Math.min(k.l,c); k.v=Math.min(1.8,k.v+Math.random()*0.05);
+    if(Math.random()<0.2){
+      candles.shift();
+      candles.push({o:c,h:c+0.0003,l:c-0.0003,c:c,v:0.3+Math.random()*0.5});
+    }
+    draw(); sync();
+  }
+  box.addEventListener('mousemove',function(e){
+    var r=box.getBoundingClientRect(), px=(e.clientX-r.left)/r.width*W;
+    var cw2=(W-PADR-10)/N, i2=Math.floor((px-6)/cw2);
+    hoverI=(i2>=0&&i2<N&&px<W-PADR)?i2:-1; draw();
+  });
+  box.addEventListener('mouseleave',function(){hoverI=-1;draw();});
+  draw(); sync();
+  setInterval(tick,1200);
+})();
+
+/* ---------- orderbook ---------- */
+(function(){
+  var r=rng(777);
+  var asksEl=document.getElementById('asks'), bidsEl=document.getElementById('bids');
+  function rows(el,side){
+    var html='',cum=0,list=[];
+    for(var i=0;i<12;i++){
+      var px=side==='ask'?0.1985+(11-i)*0.0001:0.1983-i*0.0001;
+      var sz=Math.round(800+r()*14000);
+      list.push({px:px,sz:sz});
+    }
+    if(side==='ask'){
+      var c2=0; for(var k=list.length-1;k>=0;k--){c2+=list[k].sz;list[k].cum=c2;}
+    } else { list.forEach(function(o){cum+=o.sz;o.cum=cum;}); }
+    var maxc=0; list.forEach(function(o){maxc=Math.max(maxc,o.cum);});
+    list.forEach(function(o){
+      var col=side==='ask'?'#FF5C5C':'#00E63A';
+      var w=(o.cum/maxc*100).toFixed(1);
+      html+='<div class="ob-row"><div class="depth" style="width:'+w+'%;background:'+col+';"></div>'+
+        '<span class="mono" style="color:'+col+';">'+o.px.toFixed(4)+'</span>'+
+        '<span class="c2 mono">'+o.sz.toLocaleString()+'</span>'+
+        '<span class="c3 mono">'+o.cum.toLocaleString()+'</span></div>';
+    });
+    el.innerHTML=html;
+  }
+  rows(asksEl,'ask'); rows(bidsEl,'bid');
+})();
+
+/* ---------- recent trades ---------- */
+(function(){
+  var r=rng(4242), el=document.getElementById('trades'), html='';
+  var t=14*3600+9*60+42;
+  function z(n){return (n<10?'0':'')+n;}
+  for(var i=0;i<11;i++){
+    var up=r()>0.45, px=(0.1980+r()*0.0008).toFixed(4);
+    var qty=Math.round(120+r()*6200);
+    var hh=Math.floor(t/3600),mm=Math.floor(t%3600/60),ss=Math.floor(t%60);
+    html+='<div class="tr-row"><span class="c1 mono">'+z(hh)+':'+z(mm)+':'+z(ss)+'</span>'+
+      '<span class="c2 mono '+(up?'up':'down')+'">'+px+'</span>'+
+      '<span class="c3 mono">'+qty.toLocaleString()+'</span></div>';
+    t-=Math.floor(1+r()*9);
+  }
+  el.innerHTML=html;
+})();
+
+/* ---------- order panel interactions ---------- */
+var btnBuy=document.getElementById('btnBuy'), btnSell=document.getElementById('btnSell'),
+    ctaBtn=document.getElementById('ctaBtn');
+btnBuy.addEventListener('click',function(){
+  btnBuy.classList.add('on');btnSell.classList.remove('on');
+  ctaBtn.className='cta buy';ctaBtn.textContent='买入 EDEX';
+});
+btnSell.addEventListener('click',function(){
+  btnSell.classList.add('on');btnBuy.classList.remove('on');
+  ctaBtn.className='cta sell';ctaBtn.textContent='卖出 EDEX';
+});
+document.querySelectorAll('.ot-tab').forEach(function(t){
+  t.addEventListener('click',function(){
+    document.querySelectorAll('.ot-tab').forEach(function(x){x.classList.remove('on');});
+    t.classList.add('on');
+  });
+});
+document.querySelectorAll('.pct').forEach(function(t){
+  t.addEventListener('click',function(){
+    document.querySelectorAll('.pct').forEach(function(x){x.classList.remove('on');});
+    t.classList.add('on');
+  });
+});
+document.querySelectorAll('.chip.mkt').forEach(function(t){
+  t.addEventListener('click',function(){
+    document.querySelectorAll('.chip.mkt').forEach(function(x){x.classList.remove('on');});
+    t.classList.add('on');
+    var lev=document.getElementById('levBlock');
+    if(t.dataset.mkt==='spot'){lev.classList.remove('show');}
+    else{lev.classList.add('show');}
+  });
+});
+var levRange=document.getElementById('levRange');
+levRange.addEventListener('input',function(){
+  document.getElementById('levVal').textContent=levRange.value+'x';
+  var pct=(levRange.value-2)/18*100;
+  levRange.style.background='linear-gradient(90deg,#00D632 0%,#00D632 '+pct+'%,#262B33 '+pct+'%)';
+});
+document.querySelectorAll('.tf').forEach(function(t){
+  t.addEventListener('click',function(){
+    document.querySelectorAll('.tf').forEach(function(x){x.classList.remove('on');});
+    t.classList.add('on');
+  });
+});
+document.querySelectorAll('.bs-tab').forEach(function(t){
+  t.addEventListener('click',function(){
+    document.querySelectorAll('.bs-tab').forEach(function(x){x.classList.remove('on');});
+    t.classList.add('on');
+    document.querySelectorAll('.bs-pane').forEach(function(p){p.classList.remove('on');});
+    document.getElementById(t.dataset.pane).classList.add('on');
+  });
+});
+
+/* ---------- markets table ---------- */
+(function(){
+  var tb=document.querySelector('#mktTbl tbody'),html='';
+  COINS.forEach(function(d){
+    var up=d.chg>=0;
+    var perp=d.sym.indexOf('PERP')>=0;
+    var major=/^(BTC|ETH|SOL|BNB|DOGE)/.test(d.sym);
+    html+='<tr data-sym="'+d.sym.toLowerCase()+'" data-fav="'+(d.star?1:0)+'" data-main="'+(d.main?1:0)+
+      '" data-major="'+(major?1:0)+'" data-perp="'+(perp?1:0)+'">'+
+      '<td>'+starHtml(d.star)+'</td>'+
+      '<td>'+coinIcHtml(d)+'<b>'+d.sym+'</b>'+(d.main?'<span class="badge-main">主推</span>':'')+'</td>'+
+      '<td class="hide-m">'+sparkHtml(d.seed,up)+'</td>'+
+      '<td class="r mono" style="font-weight:600;">'+d.px+'</td>'+
+      '<td class="r mono '+(up?'up':'down')+'">'+(up?'+':'')+d.chg.toFixed(2)+'%</td>'+
+      '<td class="r mono hide-m">'+d.vol+' USDT</td>'+
+      '<td class="r mono hide-m '+(d.fund.indexOf('-')===0?'down':'up')+'">'+d.fund+'</td>'+
+      '<td class="r mono hide-m">'+d.lev+'</td>'+
+      '<td class="r"><button class="btn-trade-s">交易</button></td></tr>';
+  });
+  tb.innerHTML=html;
+  bindStars(document.getElementById('mktTbl'));
+})();
+
+/* ---------- mint tiers ---------- */
+(function(){
+  var tiers=[
+    {amt:'300 U',mult:'×1.2',apr:'29%',back:'208 天',note:'体验档',gold:false},
+    {amt:'1,000 U',mult:'×1.4',apr:'58%',back:'180 天',note:'入门档',gold:false},
+    {amt:'3,000 U',mult:'×1.6',apr:'88%',back:'160 天',note:'进阶档',gold:false},
+    {amt:'10,000 U',mult:'×1.8',apr:'117%',back:'140 天',note:'精英档',gold:false},
+    {amt:'30,000 U',mult:'×2.0',apr:'146%',back:'120 天',note:'专业档',gold:false},
+    {amt:'100,000 U',mult:'×2.3',apr:'190%',back:'108 天',note:'◆ 机构档',gold:true},
+    {amt:'300,000 U',mult:'×2.6',apr:'234%',back:'96 天',note:'★ 巨鲸档',gold:true}
+  ];
+  var DAILY={"300 U": "+1.4 EDEX", "1,000 U": "+5.6 EDEX", "3,000 U": "+19.4 EDEX", "10,000 U": "+72.6 EDEX", "30,000 U": "+242 EDEX", "100,000 U": "+928 EDEX", "300,000 U": "+3,146 EDEX"};
+  var html='<div class="tl-h"><span class="c1">认购档位</span><span class="c2">铸造上限</span><span class="c3">名义年化*</span><span class="c4">回本周期</span><span class="c5"></span></div>';
+  tiers.forEach(function(t,i){
+    var tag = t.gold ? '<span class="tl-tag gold">'+t.note.replace(/[◆★]\s*/,'')+'</span>' : '<span class="tl-note-s">'+t.note+'</span>';
+    html+='<div class="tl-row" id="tlrow'+i+'">'+
+      '<span class="c1"><b>'+t.amt+'</b>'+tag+'</span>'+
+      '<span class="c2 mono">'+t.mult.replace('×','')+' 倍本金</span>'+
+      '<span class="c3 mono">'+t.apr+'</span>'+
+      '<span class="c4 mono">约 '+t.back+'</span>'+
+      '<span class="c5"><button class="btn-sub-sm" data-si="'+i+'">认购</button></span>'+
+      '</div>'+
+      '<div class="tl-sub" id="tlsub'+i+'"><div class="tls-in">'+
+        '<div class="tls-f"><label>认购金额</label><div class="tls-inp"><input value="'+t.amt.replace(/[^0-9,]/g,'')+'"><span>USDT</span></div><div class="tls-hint">可用 12,450.00 USDT</div></div>'+
+        '<div class="tls-f"><label>获得铸造额度</label><div class="tls-val mono">'+t.mult.replace('×','')+' 倍本金</div><div class="tls-hint">按折币价 0.1984 折算</div></div>'+
+        '<div class="tls-f"><label>预计每日铸造</label><div class="tls-val mono up">'+(DAILY[t.amt]||'—')+'</div><div class="tls-hint">基础 0.4%/日 · 加速最高 ×2.5</div></div>'+
+        '<div class="tls-act"><button class="btn-g">确认认购</button><button class="btn-o" data-close="'+i+'">取消</button></div>'+
+      '</div><div class="tls-note">认购后 90 天内，可对该笔订单的每日铸币申请价格保护；铸造产出提现适用 10% 手续费。</div></div>';
+  });
+  document.getElementById('tierGrid').innerHTML=html;
+  document.querySelectorAll('.btn-sub-sm').forEach(function(b){
+    b.addEventListener('click',function(){
+      var id=b.dataset.si, el=document.getElementById('tlsub'+id), was=el.classList.contains('on');
+      document.querySelectorAll('.tl-sub').forEach(function(x){x.classList.remove('on');});
+      document.querySelectorAll('.tl-row').forEach(function(x){x.classList.remove('act');});
+      if(!was){ el.classList.add('on'); document.getElementById('tlrow'+id).classList.add('act'); }
+    });
+  });
+  document.querySelectorAll('[data-close]').forEach(function(b){
+    b.addEventListener('click',function(){
+      document.getElementById('tlsub'+b.dataset.close).classList.remove('on');
+      document.querySelectorAll('.tl-row').forEach(function(x){x.classList.remove('act');});
+    });
+  });
+})();
+
+/* ---------- liquidity sub tabs + daily mint tables ---------- */
+document.querySelectorAll('.sub-tab[data-lq]').forEach(function(t){
+  t.addEventListener('click',function(){
+    document.querySelectorAll('.sub-tab[data-lq]').forEach(function(x){x.classList.remove('on');});
+    t.classList.add('on');
+    document.querySelectorAll('#v-mint .sub-pane').forEach(function(p){p.classList.remove('on');});
+    document.getElementById(t.dataset.lq).classList.add('on');
+  });
+});
+(function(){
+  var rows=[
+    ['08-11',360,'×1.3',468],['08-10',360,'×1.3',468],['08-09',360,'×1.2',432],
+    ['08-08',360,'×1.3',468],['08-07',360,'×1.5',540],['08-06',360,'×1.2',432],['08-05',360,'×1.3',468]
+  ];
+  var html='';
+  rows.forEach(function(r2){
+    html+='<tr><td class="muted mono">'+r2[0]+'</td><td class="r mono">'+r2[1]+' EDEX</td>'+
+      '<td class="r mono up">'+r2[2]+'</td><td class="r mono up">'+r2[3]+' 枚</td><td class="r up">已到账</td></tr>';
+  });
+  document.querySelector('#dailyMintTbl tbody').innerHTML=html;
+  document.querySelector('#earnMintTbl tbody').innerHTML=html;
+})();
+
+/* ---------- account sub tabs ---------- */
+document.querySelectorAll('.sub-tab[data-acct]').forEach(function(t){
+  t.addEventListener('click',function(){
+    document.querySelectorAll('.sub-tab[data-acct]').forEach(function(x){x.classList.remove('on');});
+    t.classList.add('on');
+    document.querySelectorAll('#v-acct .sub-pane').forEach(function(p){p.classList.remove('on');});
+    document.getElementById(t.dataset.acct).classList.add('on');
+  });
+});
+
+/* ---------- earnings expandables ---------- */
+document.querySelectorAll('.detail-btn').forEach(function(b){
+  b.addEventListener('click',function(){
+    var d=document.getElementById(b.dataset.det);
+    d.classList.toggle('open');
+    b.textContent=d.classList.contains('open')?'收起明细 ▴':'查看明细 ▾';
+  });
+});
+
+
+/* ---------- 小蝶 chat ---------- */
+(function(){
+  var log=document.getElementById('chatlog'), inp=document.getElementById('chatInput');
+  var replies=[
+    '收到！当前做市点差 0.25%，库存平衡良好，今日预计再铸 ~120 EDEX 🦋',
+    '本周累计铸造 3,276 EDEX，加速系数 ×1.3 保持中；继续保持交易活跃可升至 ×1.5。',
+    '做市子账户运行正常：24h 成交 214 笔，浮盈 +134.97 USDT，全部记录链上可查。'
+  ];
+  var i=0;
+  function send(){
+    var v=inp.value.trim(); if(!v)return;
+    var u=document.createElement('div');u.className='bub user';u.textContent=v;log.appendChild(u);
+    inp.value='';
+    setTimeout(function(){
+      var e=document.createElement('div');e.className='bub eddy';
+      e.textContent=replies[i%replies.length];i++;
+      log.appendChild(e);log.scrollTop=log.scrollHeight;
+    },350);
+    log.scrollTop=log.scrollHeight;
+  }
+  document.getElementById('chatSend').addEventListener('click',send);
+  inp.addEventListener('keydown',function(ev){if(ev.key==='Enter')send();});
+})();
+
+/* ---------- modals ---------- */
+function openModal(id){document.getElementById(id).classList.add('show');}
+document.querySelectorAll('[data-close]').forEach(function(b){
+  b.addEventListener('click',function(){document.getElementById(b.dataset.close).classList.remove('show');});
+});
+document.querySelectorAll('.modal-bg').forEach(function(bg){
+  bg.addEventListener('click',function(e){if(e.target===bg)bg.classList.remove('show');});
+});
+document.getElementById('navDeposit').addEventListener('click',function(){openModal('mDeposit');});
+document.getElementById('btnDeposit').addEventListener('click',function(){openModal('mDeposit');});
+document.getElementById('btnWithdraw').addEventListener('click',function(){openModal('mWithdraw');});
+document.getElementById('btnWithdraw2').addEventListener('click',function(){openModal('mWithdraw');});
+document.getElementById('btnInsure').addEventListener('click',function(){openModal('mInsure');});
+
+/* withdraw coin select → EDEX tip */
+document.querySelectorAll('#wdCoins .coin-btn').forEach(function(b){
+  b.addEventListener('click',function(){
+    document.querySelectorAll('#wdCoins .coin-btn').forEach(function(x){x.classList.remove('on');});
+    b.classList.add('on');
+    document.getElementById('edexTip').classList.toggle('show',b.dataset.coin==='EDEX');
+  });
+});
+/* deposit coin select (visual) */
+document.querySelectorAll('#mDeposit .coin-btn').forEach(function(b){
+  b.addEventListener('click',function(){
+    document.querySelectorAll('#mDeposit .coin-btn').forEach(function(x){x.classList.remove('on');});
+    b.classList.add('on');
+  });
+});
+
+/* ---------- generic copy buttons ---------- */
+document.querySelectorAll('.js-copy').forEach(function(b){
+  b.addEventListener('click',function(){
+    var old=b.textContent;
+    b.textContent='已复制';
+    setTimeout(function(){b.textContent=old;},1200);
+  });
+});
+
+/* ---------- 行情：筛选 + 搜索 ---------- */
+(function(){
+  var tabs=document.querySelectorAll('.sub-tab[data-mf]'), inp=document.getElementById('mktSearch');
+  var mode='all';
+  function apply(){
+    var q=(inp.value||'').trim().toLowerCase();
+    document.querySelectorAll('#mktTbl tbody tr').forEach(function(tr){
+      var ok=true;
+      if(mode==='fav') ok=tr.dataset.fav==='1';
+      else if(mode==='main') ok=tr.dataset.main==='1';
+      else if(mode==='major') ok=tr.dataset.major==='1';
+      else if(mode==='spot') ok=tr.dataset.perp==='0';
+      else if(mode==='perp') ok=tr.dataset.perp==='1';
+      if(ok&&q) ok=tr.dataset.sym.indexOf(q)>=0;
+      tr.style.display=ok?'':'none';
+    });
+  }
+  tabs.forEach(function(t){
+    t.addEventListener('click',function(){
+      tabs.forEach(function(x){x.classList.remove('on');});
+      t.classList.add('on'); mode=t.dataset.mf; apply();
+    });
+  });
+  inp.addEventListener('input',apply);
+})();
+
+/* ---------- 广场：收益榜 / 铸币榜 / 我的关注 ---------- */
+function idenHtml(seed,size){
+  var r=rng(seed), pal=['#00D632','#4DA3FF','#E8C56A','#FF7A59','#8B7CF6','#22C1B4'];
+  var col=pal[Math.floor(r()*pal.length)], c=size/5, g='';
+  g+='<rect width="'+size+'" height="'+size+'" fill="#1B1F24"/>';
+  for(var x=0;x<3;x++)for(var y=0;y<5;y++){
+    if(r()>0.5){
+      g+='<rect x="'+(x*c)+'" y="'+(y*c)+'" width="'+c+'" height="'+c+'" fill="'+col+'"/>';
+      if(x<2) g+='<rect x="'+((4-x)*c)+'" y="'+(y*c)+'" width="'+c+'" height="'+c+'" fill="'+col+'"/>';
+    }
+  }
+  return '<svg class="iden-av" width="'+size+'" height="'+size+'" viewBox="0 0 '+size+' '+size+'" shape-rendering="crispEdges">'+g+'</svg>';
+}
+(function(){
+  var users=[
+    {n:'蝶王Alex',   b:['N4'],     p:182.4, m:48620, s:1101, f:true},
+    {n:'巨鲸阿豪',   b:['巨鲸档'], p:141.8, m:96240, s:1102, f:false},
+    {n:'SatoshiLee',b:['S1'],     p:128.6, m:31480, s:1103, f:false},
+    {n:'量化老王',   b:['N3'],     p:113.2, m:27390, s:1104, f:false},
+    {n:'币圈小柯',   b:['N2'],     p:98.7,  m:52140, s:1105, f:true},
+    {n:'长线阿May',  b:['N3'],     p:87.5,  m:19870, s:1106, f:false},
+    {n:'FlyHunter', b:['机构档'], p:76.3,  m:74510, s:1107, f:false},
+    {n:'夜盘老陈',   b:['N2'],     p:64.9,  m:15620, s:1108, f:false},
+    {n:'做市小林',   b:['N2'],     p:58.1,  m:23840, s:1109, f:false},
+    {n:'EDEX信徒',   b:['N1'],     p:47.6,  m:11290, s:1110, f:false}
+  ];
+  var mode='profit', medals=['🥇','🥈','🥉'];
+  function bdgs(b){
+    return b.map(function(x){return '<span class="bdg '+(x.indexOf('档')>=0?'g':'n')+'">'+x+'</span>';}).join(' ');
+  }
+  function fBtn(u,cls){
+    return '<button class="btn-follow '+(cls||'')+(u.f?' on':'')+'" data-u="'+u.n+'">'+(u.f?'已关注 ✓':'关注')+'</button>';
+  }
+  function renderSpot(){
+    var top=users.slice().sort(function(a,b){return b.p-a.p;}).slice(0,3), h='';
+    top.forEach(function(u,i){
+      h+='<div class="panel spot-card"><span class="medal">'+medals[i]+'</span>'+
+        '<div class="spot-head">'+idenHtml(u.s,40)+
+        '<div><div class="spot-name">'+u.n+'</div><div style="margin-top:5px;">'+bdgs(u.b)+'</div></div></div>'+
+        '<div class="spot-stat">+'+u.p.toFixed(1)+'%<i>30日收益率</i></div>'+
+        sparkHtml(u.s,true,232,32)+fBtn(u)+'</div>';
+    });
+    document.getElementById('spotRow').innerHTML=h;
+  }
+  function renderList(){
+    var list=users.slice();
+    if(mode==='profit') list.sort(function(a,b){return b.p-a.p;});
+    else if(mode==='mint') list.sort(function(a,b){return b.m-a.m;});
+    else list=users.filter(function(u){return u.f;});
+    document.getElementById('lbStatHead').textContent=
+      mode==='profit'?'30日收益率':(mode==='mint'?'累计铸币 (EDEX)':'—');
+    var h='';
+    if(!list.length){ h='<tr><td colspan="5"><div class="lb-empty">还没有关注任何人</div></td></tr>'; }
+    list.forEach(function(u,i){
+      var st = mode==='profit' ? '<span class="up">+'+u.p.toFixed(1)+'%</span>'
+             : mode==='mint'   ? '<span class="up">'+u.m.toLocaleString()+'</span>'
+             : '<span class="muted">—</span>';
+      h+='<tr><td><span class="rank-n'+(i<3?' top':'')+'">'+(i+1)+'</span></td>'+
+        '<td><div class="lb-user">'+idenHtml(u.s,26)+'<div><b>'+u.n+'</b> '+bdgs(u.b)+'</div></div></td>'+
+        '<td class="r mono" style="font-weight:600;">'+st+'</td>'+
+        '<td class="r hide-m">'+sparkHtml(u.s,u.p>60,130,28)+'</td>'+
+        '<td class="r">'+fBtn(u,'lb-btn')+'</td></tr>';
+    });
+    document.querySelector('#lbTbl tbody').innerHTML=h;
+  }
+  function renderAll(){renderSpot();renderList();}
+  document.querySelectorAll('.sub-tab[data-lb]').forEach(function(t){
+    t.addEventListener('click',function(){
+      document.querySelectorAll('.sub-tab[data-lb]').forEach(function(x){x.classList.remove('on');});
+      t.classList.add('on'); mode=t.dataset.lb; renderAll();
+    });
+  });
+  document.getElementById('v-square').addEventListener('click',function(e){
+    var b=e.target.closest('.btn-follow'); if(!b)return;
+    for(var i=0;i<users.length;i++){ if(users[i].n===b.dataset.u){users[i].f=!users[i].f;break;} }
+    renderAll();
+  });
+  renderAll();
+
+  var feed=[
+    {n:'蝶王Alex',s:1101,t:'开多 EDEX 5×，均价 0.1938，目标 0.22',time:'2 分钟前',like:46},
+    {n:'巨鲸阿豪',s:1102,t:'认购巨鲸档 300,000U，加速拉满 ×2.6 🐋',time:'11 分钟前',like:128},
+    {n:'币圈小柯',s:1105,t:'今日铸造 +860 EDEX，连续 12 天达标',time:'27 分钟前',like:33},
+    {n:'量化老王',s:1104,t:'网格做市跑了一周，手续费返还比预期多 18%',time:'1 小时前',like:57},
+    {n:'FlyHunter',s:1107,t:'把 NECO 现货换成永续对冲，资金费率白拿',time:'2 小时前',like:24}
+  ];
+  var fh='';
+  feed.forEach(function(f){
+    fh+='<div class="feed-item"><div class="feed-top">'+idenHtml(f.s,22)+'<b>'+f.n+'</b></div>'+
+      '<div class="feed-txt">'+f.t+'</div>'+
+      '<div class="feed-meta"><span>'+f.time+'</span><span>♡ '+f.like+'</span></div></div>';
+  });
+  document.getElementById('feedList').innerHTML=fh;
+})();
+
+/* ---------- 流动性：我的订单（多订单 + 单笔价格保护） ---------- */
+(function(){
+  var orders=[
+    {no:'ORD-20260514-001',tier:'10,000 U · ×1.8',date:'2026-05-14',quota:'18,000 EDEX',minted:'6,842 EDEX',
+     today:'+234 EDEX',acc:'×1.3',pct:38.0,prot:'ok',protTxt:'价格保护 生效中 · 剩余 81 天',
+     line:'保护价 0.1296（入场折币价 0.1620 的 8 折）'},
+    {no:'ORD-20260622-014',tier:'3,000 U · ×1.6',date:'2026-06-22',quota:'4,800 EDEX',minted:'1,268 EDEX',
+     today:'+96 EDEX',acc:'×1.3',pct:26.4,prot:'none',protTxt:'价格保护 未申请',
+     line:'可申请 90 天保价护航（按入场折币价 8 折回购）'},
+    {no:'ORD-20260703-027',tier:'30,000 U · ×2.0',date:'2026-07-03',quota:'60,000 EDEX',minted:'4,274 EDEX',
+     today:'+138 EDEX',acc:'×1.2',pct:7.1,prot:'done',protTxt:'价格保护 已触发 · 已回购 320 EDEX',
+     line:'保护价 0.1512 · 平准基金按 8 折承接完成'}
+  ];
+  var h='';
+  orders.forEach(function(o){
+    h+='<div class="panel ord-card">'+
+      '<div class="oc-top">'+
+        '<span class="ord-no mono">#'+o.no+'</span>'+
+        '<span class="tier-pill">'+o.tier+'</span>'+
+        '<span class="muted" style="font-size:11.5px;">认购于 '+o.date+'</span>'+
+        '<span class="prot-badge '+(o.prot==='none'?'':o.prot)+'">'+o.protTxt+'</span>'+
+        '<div class="oc-btns">'+
+          '<button class="btn-o" style="padding:7px 16px;font-size:12.5px;">铸币明细</button>'+
+        '</div>'+
+      '</div>'+
+      '<div class="oc-grid">'+
+        '<div class="oc-cell"><i>总额度</i><b class="mono">'+o.quota+'</b></div>'+
+        '<div class="oc-cell"><i>已铸造</i><b class="mono up">'+o.minted+'</b></div>'+
+        '<div class="oc-cell"><i>今日铸造</i><div class="td-line"><b class="mono up">'+o.today+'</b>'+
+          (o.prot==='none'
+            ? '<button class="pt-btn on" data-protect="'+o.no+'">申请价格保护</button>'
+            : '<button class="pt-btn" data-protect="'+o.no+'">保护详情</button>')+'</div></div>'+
+        '<div class="oc-cell"><i>当前加速</i><b class="up">'+o.acc+'</b></div>'+
+        '<div class="oc-cell"><i>铸造进度 '+o.pct.toFixed(1)+'%</i><b class="mono" style="font-size:12px;font-weight:400;color:var(--muted);">'+o.line+'</b>'+
+          '<div class="pbar"><span style="width:'+o.pct+'%;"></span></div></div>'+
+      '</div></div>';
+  });
+  document.getElementById('ordList').innerHTML=h;
+  document.querySelectorAll('[data-protect]').forEach(function(b){
+    b.addEventListener('click',function(){
+      var t=document.getElementById('protOrderNo');
+      if(t) t.textContent='#'+b.dataset.protect;
+      openModal('mProtect');
+    });
+  });
+})();
+
+/* ---------- 团队：层级下钻（L1 → L2 → L3） ---------- */
+(function(){
+  var TEAM={
+    root:[
+      {a:'neco1q…4wz3',lv:'N1',self:'28,420',team:'46,300',k:'n1'},
+      {a:'neco1x…m9k7',lv:'N1',self:'19,088',team:'31,720',k:'n2'},
+      {a:'neco1t…p2c8',lv:'N0',self:'14,340',team:'22,860',k:'n3'},
+      {a:'neco1h…e6r2',lv:'N0',self:'12,615',team:'18,430',k:'n4'},
+      {a:'neco1z…a3n5',lv:'N0',self:'9,837',team:'13,940',k:'n5'},
+      {a:'neco1v…8p6q',lv:'N0',self:'6,204',team:'8,750',k:'n6'}
+    ],
+    n1:[
+      {a:'neco1a…f8d1',lv:'N0',self:'9,120',team:'12,400',k:'z1'},
+      {a:'neco1b…c3e9',lv:'N0',self:'4,860',team:'6,180',k:'z2'},
+      {a:'neco1c…41ke',lv:'N0',self:'3,275',team:'3,275',k:'z3'}
+    ],
+    n2:[
+      {a:'neco1d…9a4f',lv:'N0',self:'6,410',team:'8,920',k:'z4'},
+      {a:'neco1e…70bc',lv:'N0',self:'4,138',team:'4,138',k:'z5'}
+    ],
+    n3:[{a:'neco1f…22ba',lv:'N0',self:'5,260',team:'6,410',k:'z6'}],
+    n4:[{a:'neco1g…7c0e',lv:'N0',self:'3,908',team:'3,908',k:'z7'}],
+    n5:[{a:'neco1i…5m2x',lv:'N0',self:'2,745',team:'2,745',k:'z8'}],
+    n6:[{a:'neco1j…0d19',lv:'N0',self:'1,860',team:'1,860',k:'z9'}]
+  };
+  var path=[{key:'root',label:'我的团队'}];
+  var body=document.getElementById('teamBody'),
+      crumb=document.getElementById('teamCrumb'),
+      back=document.getElementById('teamBack');
+  if(!body) return;
+
+  function render(){
+    var cur=path[path.length-1], rows=TEAM[cur.key]||[], depth=path.length;
+    crumb.innerHTML=path.map(function(p,i){
+      return i===path.length-1
+        ? '<span style="color:var(--txt);font-weight:600;">'+p.label+'</span>'
+        : '<a data-i="'+i+'">'+p.label+'</a><span>›</span>';
+    }).join('')+'<span class="muted" style="margin-left:6px;">（第 '+depth+' 层 · 共 '+rows.length+' 人）</span>';
+    back.style.display = depth>1 ? 'block' : 'none';
+
+    if(!rows.length){
+      body.innerHTML='<div class="team-empty"><div>▤</div>暂无数据 · 该成员暂未发展下级</div>';
+      return;
+    }
+    var h='<table class="tbl"><thead><tr><th style="width:90px;">层级</th><th>地址</th>'+
+      '<th class="r">团队等级</th><th class="r">个人业绩 (USDT)</th><th class="r">团队业绩 (USDT)</th></tr></thead><tbody>';
+    rows.forEach(function(r){
+      h+='<tr class="drill" data-k="'+r.k+'" data-a="'+r.a+'">'+
+        '<td><span class="lv-badge'+(depth===1?' l1':'')+'">L'+depth+'</span></td>'+
+        '<td class="mono" style="font-weight:600;">'+r.a+'<span class="go">›</span></td>'+
+        '<td class="r">'+r.lv+'</td>'+
+        '<td class="r mono">'+r.self+'</td>'+
+        '<td class="r mono up">'+r.team+'</td></tr>';
+    });
+    body.innerHTML=h+'</tbody></table>';
+  }
+  body.addEventListener('click',function(e){
+    var tr=e.target.closest('tr.drill'); if(!tr)return;
+    path.push({key:tr.dataset.k,label:tr.dataset.a});
+    render();
+  });
+  back.addEventListener('click',function(){ if(path.length>1){path.pop();render();} });
+  crumb.addEventListener('click',function(e){
+    var a=e.target.closest('a[data-i]'); if(!a)return;
+    path=path.slice(0,parseInt(a.dataset.i,10)+1); render();
+  });
+  render();
+})();
+</script>
+<script>(function(){var a=document.getElementById('btnInsure2'),b=document.getElementById('btnInsure');if(a&&b)a.addEventListener('click',function(){b.click();});})();</script>
+</body>
+</html>

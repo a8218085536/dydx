@@ -1,0 +1,71 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <parent>
+        <groupId>com.openexchange.oms</groupId>
+        <artifactId>order-management</artifactId>
+        <version>1.0-SNAPSHOT</version>
+    </parent>
+
+    <artifactId>oms-assets-client</artifactId>
+    <name>OMS Assets Client</name>
+    <description>Aeron cluster client for the Assets Engine (money-schema v2 SBE encode/decode)</description>
+
+    <dependencies>
+        <!-- Money-schema v2 SBE codecs (Hold/Release/Deposit/Withdraw ingress, HoldAck/BalanceUpdate/... egress) -->
+        <!-- The BalanceStore seam the AeronAssetsBalanceStore implements. -->
+        <dependency>
+            <groupId>com.openexchange.oms</groupId>
+            <artifactId>oms-ledger</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>com.openexchange.assets</groupId>
+            <artifactId>assets-common</artifactId>
+        </dependency>
+
+        <!-- The AE port arithmetic, one copy. Small and Apache-2.0: this keeps the
+             money client off the heavyweight server module, which is why the maths
+             was duplicated here in the first place. -->
+        <dependency>
+            <groupId>com.openexchange</groupId>
+            <artifactId>cluster-kit</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>io.aeron</groupId>
+            <artifactId>aeron-all</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.agrona</groupId>
+            <artifactId>agrona</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.slf4j</groupId>
+            <artifactId>slf4j-api</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.junit.jupiter</groupId>
+            <artifactId>junit-jupiter</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <!-- OMS↔AE integration test only: boots a REAL in-process single-node AE cluster
+             (AssetsClusteredService + ClusterConfig) to exercise the real client/store end to end.
+             Test-scoped so the money client's production classpath still depends on assets-common only,
+             never on the heavyweight cluster server module. -->
+        <dependency>
+            <groupId>com.openexchange.assets</groupId>
+            <artifactId>assets-cluster</artifactId>
+            <version>${assets.version}</version>
+            <scope>test</scope>
+        </dependency>
+        <!-- A concrete SLF4J binding so the client/store/cluster logs are visible during the test. -->
+        <dependency>
+            <groupId>ch.qos.logback</groupId>
+            <artifactId>logback-classic</artifactId>
+            <scope>test</scope>
+        </dependency>
+    </dependencies>
+</project>

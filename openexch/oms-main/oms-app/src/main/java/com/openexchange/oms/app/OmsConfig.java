@@ -1,0 +1,106 @@
+// SPDX-License-Identifier: Apache-2.0
+package com.openexchange.oms.app;
+
+/**
+ * OMS application configuration.
+ *
+ * Auth (oms#36): authMode selects the AuthenticationProvider — "api-key"
+ * (secure default; with no keys configured every request is rejected),
+ * "jwt" (HS256, requires jwtSecret), or "dev" (accepts everything — must be
+ * opted into explicitly, never production).
+ *
+ * Balance store: the Assets Engine cluster is the money authority — there is
+ * no alternative and nothing to select. The AE tunables
+ * (aeHoldTimeoutMs/aeAckTimeoutMs/aeConnectTimeoutMs) size the OMS's client.
+ *
+ * Balance feed: BALANCE_FEED_CHANNEL (empty/unset = OFF) names the AE's
+ * conflated balance side-channel — a comma-separated list of Aeron URIs, one
+ * per AE node's control endpoint (only the leader publishes, so the extra
+ * subscriptions are free; a single multicast URI also works — see
+ * AssetsClusterClient's balanceFeedChannels doc). When set, the OMS consumes
+ * live balances from it and narrows its cluster session to acks+settlements
+ * instead of receiving every user's BalanceUpdate. Each AE node reads the
+ * same env name for its own publisher URI, so a stack profile drives both
+ * sides with one field. BALANCE_FEED_STREAM_ID overrides the feed stream id
+ * (default 4201).
+ */
+public record OmsConfig(
+    int httpPort,
+    int grpcPort,
+    String postgresUrl,
+    String postgresUser,
+    String postgresPassword,
+    String clusterIngress,
+    int nodeId,
+    String authMode,
+    String apiKeys,
+    String apiKeysFile,
+    String jwtSecret,
+    String corsOrigins,
+    String auditLogPath,
+    long aeHoldTimeoutMs,
+    long aeAckTimeoutMs,
+    long aeConnectTimeoutMs,
+    String balanceFeedChannel,
+    int balanceFeedStreamId
+) {
+    public static OmsConfig loadDefaults() {
+        return new OmsConfig(
+            intProp("OMS_HTTP_PORT", 8080),
+            intProp("OMS_GRPC_PORT", 9090),
+            prop("OMS_POSTGRES_URL", "jdbc:postgresql://localhost:5432/oms"),
+            prop("OMS_POSTGRES_USER", "oms"),
+            // No default password (oms#37): unset means Postgres auth fails and
+            // the OMS runs without persistence rather than shipping "oms/oms".
+            secretProp("OMS_POSTGRES_PASSWORD", ""),
+            prop("OMS_CLUSTER_INGRESS", "localhost:9000"),
+            intProp("OMS_NODE_ID", 0),
+            prop("OMS_AUTH_MODE", "api-key"),
+            prop("OMS_API_KEYS", ""),
+            prop("OMS_API_KEYS_FILE", ""),
+            secretProp("OMS_JWT_SECRET", ""),
+            prop("OMS_CORS_ORIGINS", ""),
+            // Default under ~/.local/log/oms (AuditLog.open creates the directories),
+            // not the working directory where it used to land in the repo root.
+            prop("OMS_AUDIT_LOG", System.getProperty("user.home") + "/.local/log/oms/oms-audit.log"),
+            longProp("OMS_AE_HOLD_TIMEOUT_MS", 250L),
+            longProp("OMS_AE_ACK_TIMEOUT_MS", 1000L),
+            longProp("OMS_AE_CONNECT_TIMEOUT_MS", 30_000L),
+            // Deliberately NOT OMS_-prefixed: it is the same knob the AE nodes read
+            // (see assets' BalanceFeedRuntime), one stack-profile value for both sides.
+            prop("BALANCE_FEED_CHANNEL", ""),
+            intProp("BALANCE_FEED_STREAM_ID",
+                com.openexchange.oms.assets.AssetsClusterClient.DEFAULT_BALANCE_FEED_STREAM_ID)
+        );
+    }
+
+    private static String prop(String key, String defaultValue) {
+        String env = System.getenv(key);
+        return env != null ? env : System.getProperty(key.toLowerCase().replace('_', '.'), defaultValue);
+    }
+
+    /** Like prop, but also accepts KEY_FILE pointing at a secret file (oms#37). */
+    private static String secretProp(String key, String defaultValue) {
+        String direct = prop(key, null);
+        if (direct != null) return direct;
+        String file = prop(key + "_FILE", null);
+        if (file != null && !file.isBlank()) {
+            try {
+                return java.nio.file.Files.readString(java.nio.file.Path.of(file)).trim();
+            } catch (java.io.IOException e) {
+                throw new IllegalArgumentException("Cannot read " + key + "_FILE " + file + ": " + e.getMessage(), e);
+            }
+        }
+        return defaultValue;
+    }
+
+    private static int intProp(String key, int defaultValue) {
+        String val = prop(key, null);
+        return val != null ? Integer.parseInt(val) : defaultValue;
+    }
+
+    private static long longProp(String key, long defaultValue) {
+        String val = prop(key, null);
+        return val != null ? Long.parseLong(val) : defaultValue;
+    }
+}

@@ -1,0 +1,1565 @@
+// SPDX-License-Identifier: Apache-2.0
+package com.match.infrastructure.persistence;
+
+import com.match.application.engine.Engine;
+import com.match.application.engine.MarketConfig;
+import com.match.application.publisher.MarketDataBroadcaster;
+import com.match.application.publisher.MatchEventPublisher;
+import com.match.infrastructure.websocket.MarketPublisher;
+import com.match.infrastructure.websocket.SubscriptionManager;
+import io.aeron.Aeron;
+import io.aeron.Publication;
+import io.aeron.archive.client.AeronArchive;
+import io.aeron.cluster.service.ClientSession;
+import io.aeron.cluster.service.Cluster;
+import io.aeron.cluster.service.ClusteredService;
+import io.aeron.cluster.service.Cluster.Role;
+import io.aeron.cluster.codecs.CloseReason;
+import io.aeron.logbuffer.Header;
+// FragmentHandler replaced with FragmentAssembler for proper multi-fragment reassembly
+import io.aeron.ExclusivePublication;
+import io.aeron.Image;
+import org.agrona.CloseHelper;
+import org.agrona.DirectBuffer;
+import org.agrona.ExpandableArrayBuffer;
+import org.agrona.concurrent.UnsafeBuffer;
+import org.agrona.collections.Int2ObjectHashMap;
+import com.match.infrastructure.Logger;
+import com.match.infrastructure.generated.MessageHeaderDecoder;
+import com.match.infrastructure.generated.MessageHeaderEncoder;
+import com.match.infrastructure.generated.ClusterHeartbeatEncoder;
+
+import static com.match.infrastructure.InfrastructureConstants.*;
+
+import java.nio.charset.StandardCharsets;
+import java.util.List;
+import java.util.Queue;
+import java.util.concurrent.ArrayBlockingQueue;
+import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.AtomicLong;
+
+public class AppClusteredService implements ClusteredService {
+    private static final Logger logger = Logger.getLogger(AppClusteredService.class);
+
+    // Slice C: engine-creation mode. false (default) = LEGACY — engines are built at construction
+    // from MarketConfig.ALL_MARKETS + env exactly as always (bit-for-bit today's behavior; the
+    // red line). true = CONFIG mode — the engine starts EMPTY and is created solely from the
+    // logged EngineConfig command (or a config-bearing snapshot); orders before that are loudly
+    // REJECTED by the fresh-cluster guard. This flag is a LAUNCH parameter of the same class as
+    // CLUSTER_ADDRESSES (it declares which bootstrap era the deployment is in); the
+    // engine-creation VALUES themselves only ever come from the cluster log. Resolved once,
+    // strictly: an explicitly set but unparseable value is refused at startup (never silently
+    // defaulted), matching resolveEgressDrainMax / SnapshotCadence.
+    //
+    // UNIFORMITY CONSTRAINT — it MUST be identical on every member of a cluster, exactly like
+    // CLUSTER_ADDRESSES. A mixed cluster has a fork window on any order that arrives before the
+    // first EngineConfig: a legacy member has engines from boot and MATCHES the order, while a
+    // config-mode member has none and REJECTS it — replicated state diverges on the same logged
+    // command. The flag cannot verify its peers itself (a node's env is invisible to the
+    // cluster), so it is exported as the match_engine_from_config gauge (0/1): the operator
+    // layer / admin gateway verifies uniformity across members BEFORE admitting genesis traffic,
+    // the same layer-1 safeguard input as match_supported_behavior_versions. Deployment rule:
+    // the dogfood path NEVER uses config mode — existing clusters stay legacy and adopt their
+    // config mid-life via the logged EngineConfig; config mode is for FRESH clusters only.
+    private final boolean engineFromConfigMode = resolveEngineFromConfigMode(
+            System.getenv("MATCH_ENGINE_FROM_CONFIG"), System.getProperty("match.engine.from.config"));
+
+    private final Engine engine = engineFromConfigMode ? Engine.deferredUntilConfig() : new Engine();
+    private final ClientSessions clientSessions = new ClientSessions();
+    private final SessionMessageContextImpl context = new SessionMessageContextImpl(clientSessions);
+    private final TimerManager timerManager = new TimerManager(context);
+    private final SbeDemuxer sbeDemuxer = new SbeDemuxer(engine);
+
+    // Slice C: the EngineConfig decision table (fresh-create / adopt+cross-check / duplicate /
+    // reject). failFast is the fail-fast exit — same principle as the A-9 egress-init exits: a
+    // node that provably diverges from the cluster's declared truth (or cannot bring up egress)
+    // must not serve; the other nodes keep quorum.
+    //
+    // The default is Runtime.halt(1), NOT System.exit(1). Every caller of this seam runs on the
+    // cluster SERVICE thread (the state machine's adopt-mismatch path and the egress-init catch
+    // blocks below). System.exit runs the JVM's shutdown hooks, and this process's hooks (the
+    // Aeron/ShutdownSignalBarrier teardown chain) wait for the clustered service agent to stop
+    // — i.e. for the very thread that is sitting inside exit(). Observed live 2026-08-23 (first
+    // adopt, demo box, match @ cd85640, #223): all three nodes hit the adopt cross-check
+    // mismatch, called System.exit(1) from the service thread, and ZOMBIFIED — process alive,
+    // reporting HEALTHY, processing nothing, TERM-immune (kill -9 required). halt() terminates
+    // the JVM without running shutdown hooks, so it cannot deadlock on them; skipping graceful
+    // teardown is correct on this path because fail-fast means this node's state must not reach
+    // peers anyway — recovery is restart+replay. Same mechanism as AeronCluster's hot-loop
+    // fail-fast (IDENTICAL_ERROR threshold, halt(2)). Because hooks are skipped, callers must
+    // log their evidence BEFORE invoking the seam, and NO caller may assume hooks ran.
+    //
+    // Package-private mutable seam so tests can swap the hook for a recorder (the bare A-9
+    // System.exit had no seam; this one starts with one) — the state machine dereferences it
+    // per call, so a swap after construction takes effect. The default body lives in
+    // failFastHalt() so the forked-JVM test (FailFastHaltProcessTest) exercises the exact
+    // production path.
+    Runnable failFast = AppClusteredService::failFastHalt;
+
+    /**
+     * Production default of the {@link #failFast} seam: hookless hard stop. Must stay
+     * {@link Runtime#halt(int)}, never {@link System#exit(int)} — see the seam comment: exit()
+     * from the service thread deadlocks in shutdown hooks that await the service thread (live
+     * incident 2026-08-23, #223). Static and package-private so the forked-JVM test can invoke
+     * the exact production code path.
+     */
+    static void failFastHalt() {
+        Runtime.getRuntime().halt(1);
+    }
+    private final com.match.application.engine.EngineConfigStateMachine engineConfigStateMachine =
+            new com.match.application.engine.EngineConfigStateMachine(
+                    engine, () -> failFast.run(), this::onEnginesCreatedFromConfig);
+
+    private final MessageHeaderDecoder headerDecoder = new MessageHeaderDecoder();
+
+    // Egress keep-warm: when the leader has sent no egress for this long,
+    // broadcast a ClusterHeartbeat so gateway stale-egress detection stays
+    // healthy during idle markets. Session liveness is handled by Aeron's
+    // protocol-level keep-alive (never enters the Raft log) — NOT by this.
+    private static final long EGRESS_KEEP_WARM_INTERVAL_MS = 1_000;
+    private volatile long lastEgressSendMs = 0;
+
+    // Periodic full-book resnapshot: the lossy market-data egress can shed a
+    // delta under burst (drop-oldest byte budget), after which the gateway's
+    // chain-continuity gate (match#96) rightly stops applying deltas and marks
+    // the book stale. Recovery REQUIRES a fresh BOOK_SNAPSHOT, but snapshots
+    // were only generated on session open, so a mid-session break froze the
+    // book forever (observed live 2026-07-08: sim resume burst -> 5/5 books
+    // stale). Bumping the resnapshot generation periodically bounds staleness
+    // at this interval; the gateway drops equal-version snapshots (match#95),
+    // so steady-state cost is a handful of small frames per market.
+    private static final long PERIODIC_RESNAPSHOT_INTERVAL_MS = 10_000;
+    private long lastPeriodicResnapshotMs = 0;
+    private final MessageHeaderEncoder keepWarmHeaderEncoder = new MessageHeaderEncoder();
+    private final ClusterHeartbeatEncoder keepWarmEncoder = new ClusterHeartbeatEncoder();
+    private final UnsafeBuffer keepWarmBuffer = new UnsafeBuffer(
+            new byte[MessageHeaderEncoder.ENCODED_LENGTH + ClusterHeartbeatEncoder.BLOCK_LENGTH]);
+
+    // Event publishing infrastructure
+    private final MatchEventPublisher eventPublisher = new MatchEventPublisher();
+    private final SubscriptionManager subscriptionManager = new SubscriptionManager();
+
+    /**
+     * Arm the settlement journal on the event publisher. Called from AeronCluster bootstrap
+     * (before launch) when SETTLEMENT_JOURNAL_ENABLED — the journal itself lives with the
+     * bootstrap because it owns the second (journal) archive's lifecycle.
+     */
+    public void setSettlementJournal(final com.match.infrastructure.journal.SettlementJournal journal) {
+        eventPublisher.setSettlementJournal(journal);
+    }
+
+    // Store cluster reference for snapshot idle strategy and broadcasting
+    private Cluster cluster;
+
+    // match#73: role mirror safe to read from any thread. broadcast()/broadcastReliable()
+    // are invoked from the per-market Disruptor flush thread (MarketPublisher.flushBuffers()),
+    // which must never touch `cluster` directly — Cluster is scoped to the single Aeron
+    // service thread. Updated everywhere nodeMetrics.setRole() is (onStart/onRoleChange).
+    private volatile boolean isLeader = false;
+
+    // match#33: hot-path-safe metrics — plain longs written on this (agent)
+    // thread, scraped via a JDK HTTP server on its own daemon thread.
+    private final com.match.infrastructure.metrics.NodeMetrics nodeMetrics =
+            new com.match.infrastructure.metrics.NodeMetrics();
+    private com.match.infrastructure.metrics.NodeMetricsServer metricsServer;
+    // What this node answers about ITSELF. An orchestrator replaces the old
+    // external supervisor, and it asks two questions: should I kill this pod
+    // (/health) and may I move on to restarting the next one (/ready). Getting
+    // the second one wrong costs quorum, so it is deliberately pessimistic.
+    private final com.openexchange.cluster.NodeReadiness readiness =
+            new com.openexchange.cluster.NodeReadiness();
+    private com.openexchange.cluster.NodeEndpoint nodeEndpoint;
+    // cluster-kit#15: the last role this duty cycle OBSERVED via cluster.role().
+    // Only feeds readiness in doBackgroundWork; isLeader and the rest of the
+    // role bookkeeping stay driven by the onRoleChange callback.
+    private Role lastObservedRole;
+
+    // What makes this cluster snapshot itself with no admin gateway running.
+    // Aeron calls onTakeSnapshot but nothing calls Aeron; the rhythm used to
+    // live in the gateway's Go scheduler, so an engine run on its own never
+    // truncated its log and eventually filled its disk (2026-07-25).
+    private final com.openexchange.cluster.SnapshotCadence snapshotCadence =
+            com.openexchange.cluster.SnapshotCadence.fromEnv();
+    // ...and what turns the snapshot into reclaimed disk on THIS node.
+    private com.openexchange.cluster.SnapshotLogPruner logPruner;
+
+    // Lazy-initialized AeronArchive client used to confirm snapshot recordings are durable
+    // before onTakeSnapshot returns. See awaitSnapshotRecorded() for the full reasoning.
+    private AeronArchive snapshotArchive;
+
+    // Buffer for broadcasting market data via Aeron egress
+    // Uses ExpandableDirectByteBuffer to handle large book snapshots (can exceed 32KB with many orders)
+    private final org.agrona.ExpandableDirectByteBuffer broadcastBuffer = new org.agrona.ExpandableDirectByteBuffer(64 * 1024); // 64KB initial, grows as needed
+
+    // Queue for market data messages (SBE binary, thread-safe for producer on Disruptor thread)
+    // Bounded to prevent OOM if cluster egress backs up
+    private static final int MARKET_DATA_QUEUE_CAPACITY = 10_000;
+    private final Queue<QueuedMessage> marketDataQueue = new ArrayBlockingQueue<>(MARKET_DATA_QUEUE_CAPACITY);
+    private final AtomicLong droppedMessages = new AtomicLong(0);
+    // match#73: lossy market-data egress skipped on followers, which have no connected
+    // consumer (only the leader's gateway session drains marketDataQueue). Counted
+    // separately from droppedMessages so /metrics can distinguish "shed under load"
+    // (leader, real problem) from "never buffered, wrong role" (follower, by design).
+    private final AtomicLong followerSkipped = new AtomicLong(0);
+
+    // OMS-bound settlement egress (OrderStatus + TradeExecution) uses a SEPARATE, much larger
+    // queue so it is never evicted by a flood of refreshable UI market data (book snapshots/
+    // deltas/trades). The shared marketDataQueue silently drops on overflow (fine for UI book
+    // data), but dropping an OrderStatus terminal (CANCELLED/REJECTED) leaves an OMS hold stuck
+    // forever (oms#21) and dropping a TradeExecution loses a fill. Drained with priority in flush().
+    private static final int OMS_EGRESS_QUEUE_CAPACITY = 1 << 18; // 262144
+    private final Queue<QueuedMessage> omsEgressQueue = new ArrayBlockingQueue<>(OMS_EGRESS_QUEUE_CAPACITY);
+    private final AtomicLong droppedOmsEgress = new AtomicLong(0);
+
+    // match#115 audit: drainQueue() gives up on a message for a session after bounded backpressure
+    // retries — a real egress loss the enqueue-side drop counters above can never see. Must stay 0;
+    // if it climbs, frames are vanishing between the queue and the wire (gateway chain breaks are
+    // then EXPECTED and correct — this counter says why).
+    private final AtomicLong egressOfferGiveUps = new AtomicLong(0);
+
+    // match#140: per-session egress delivery observability. egressOfferGiveUps above only sees the
+    // BACKPRESSURE give-up; a session going dark via NOT_CONNECTED/CLOSED/MAX_POSITION_EXCEEDED hit a
+    // bare `break` in drainQueue with NO counter, and lastEgressSendMs was stamped on poll not on
+    // delivery, so match_last_egress_age_ms read healthy during a single-session blackout. This holds
+    // the per-disposition skip counters, per-session skip tally + last-successful-offer age, and the
+    // per-drain delivery flag. Observability only — no delivery/backpressure/retry behavior changes.
+    // See EgressSessionMetrics for the (service-thread-only maps, AtomicLong/volatile scrape) model.
+    private final EgressSessionMetrics egressSessionMetrics = new EgressSessionMetrics();
+
+    // The queues above are bounded by ENTRY COUNT, but each entry holds a copied batch buffer
+    // (up to ~150KB), so a count limit alone is NOT a memory bound — under a backed-up egress
+    // consumer (or while replaying a huge log) they can fill the heap and OOM the matching node.
+    // Also cap total queued BYTES. Incremented on offer, decremented on drain.
+    private static final long MARKET_DATA_MAX_BYTES = 32L << 20;  // 32 MB (UI data; lossy)
+    private static final long OMS_EGRESS_MAX_BYTES = 128L << 20;  // 128 MB (settlement; generous)
+    private final AtomicLong marketDataBytes = new AtomicLong(0);
+    private final AtomicLong omsEgressBytes = new AtomicLong(0);
+
+    // C-3: per-drain work cap. drainQueue() processes at most this many messages per call, so a
+    // freshly promoted leader inheriting a full warm-standby omsEgressQueue (up to
+    // OMS_EGRESS_QUEUE_CAPACITY = 262144 entries) does not stall behind one unbounded drain before it
+    // can handle a new command (the AE 60s failover-blindness mechanism). Override with env
+    // MATCH_EGRESS_DRAIN_MAX or -Dmatch.egress.drain.max; read once at startup. An explicitly set but
+    // unparseable or non-positive value is REFUSED at startup (see resolveEgressDrainMax), never
+    // silently defaulted, matching the SnapshotCadence tunables. The leftover backlog is never
+    // dropped; the next flush drains it and match_egress_drain_capped_total counts the deferrals.
+    static final int DEFAULT_EGRESS_DRAIN_MAX = 4096;
+    private static final int EGRESS_DRAIN_MAX = resolveEgressDrainMax(
+            System.getenv("MATCH_EGRESS_DRAIN_MAX"), System.getProperty("match.egress.drain.max"));
+    // Drains that hit the cap with work still queued (deferred to the next flush, no loss). Climbs
+    // during a leader takeover inheriting a deep queue; must not stay pinned high in steady state.
+    private final AtomicLong drainCapped = new AtomicLong(0);
+
+    // P1.5/P1.1 (match#32/#30): overflow rejects are counted in Engine at order
+    // admission (notional does not fit 64-bit fixed-point) and read from there
+    // for the EGRESS-DIAG lines below.
+
+    // Simple wrapper for queued SBE messages (holds copy of buffer content)
+    // Package-private (was private) so the C-3 drain-cap test can enqueue synthetic messages.
+    static final class QueuedMessage {
+        final byte[] data;
+        final int length;
+
+        QueuedMessage(byte[] data, int length) {
+            this.data = data;
+            this.length = length;
+        }
+    }
+
+    /**
+     * MarketDataBroadcaster implementation that queues SBE messages for later sending.
+     * Messages are queued from the Disruptor thread and flushed on gateway heartbeats.
+     * This is required because Aeron Cluster only allows sending from the main service thread.
+     */
+    private final MarketDataBroadcaster aeronBroadcaster = new MarketDataBroadcaster() {
+        private final AtomicLong resnapshotGeneration = new AtomicLong(0);
+
+        @Override
+        public void requestResnapshot() {
+            resnapshotGeneration.incrementAndGet();
+        }
+
+        @Override
+        public long resnapshotGeneration() {
+            return resnapshotGeneration.get();
+        }
+
+        @Override
+        public void broadcast(org.agrona.DirectBuffer buffer, int offset, int length) {
+            // match#73: followers can never publish this (only the leader has a connected
+            // gateway session; flush() below is leader-gated) — buffering it would just fill
+            // the byte budget and trigger the "egress full" WARN for output that can never
+            // drain. Skip the enqueue entirely rather than shed after queuing.
+            if (!isLeader) {
+                followerSkipped.incrementAndGet();
+                return;
+            }
+            // Copy the buffer content (since the source buffer is reused)
+            byte[] copy = new byte[length];
+            buffer.getBytes(offset, copy, 0, length);
+
+            boolean queued = marketDataBytes.get() + length <= MARKET_DATA_MAX_BYTES
+                    && marketDataQueue.offer(new QueuedMessage(copy, length));
+            if (queued) {
+                marketDataBytes.addAndGet(length);
+            } else {
+                long dropped = droppedMessages.incrementAndGet();
+                if (dropped % 10000 == 1) {
+                    System.err.println("WARNING: Market data egress full (count or "
+                        + (MARKET_DATA_MAX_BYTES >> 20) + "MB byte budget)! Dropped " + dropped +
+                        " total messages. Clients may have stale data.");
+                }
+            }
+        }
+
+        @Override
+        public void broadcastReliable(org.agrona.DirectBuffer buffer, int offset, int length) {
+            // OMS-bound settlement egress (OrderStatus / TradeExecution). MUST NOT be silently
+            // dropped under market-data load: uses the separate, large omsEgressQueue, drained
+            // with priority in flush(). See OMS_EGRESS_QUEUE_CAPACITY for the never-drop rationale.
+            //
+            // match#73: unlike broadcast() above, followers KEEP buffering this — it is a
+            // deliberate warm standby so a freshly-promoted leader has settlement egress ready
+            // to drain immediately (OMS re-acks are idempotent, so any overlap on takeover is
+            // harmless). Only the "queue full" log is gated to the leader below.
+            byte[] copy = new byte[length];
+            buffer.getBytes(offset, copy, 0, length);
+
+            boolean queued = omsEgressBytes.get() + length <= OMS_EGRESS_MAX_BYTES
+                    && omsEgressQueue.offer(new QueuedMessage(copy, length));
+            if (queued) {
+                omsEgressBytes.addAndGet(length);
+            } else {
+                long dropped = droppedOmsEgress.incrementAndGet();
+                // Only under extreme sustained overload (the byte budget bounds heap, preventing OOM).
+                // Dropped settlement is recoverable via OMS reconciliation against the cluster log.
+                // Followers stay quiet (this is expected there under sustained load since nothing
+                // ever drains their queue); the counter still increments for /metrics.
+                if (isLeader && (dropped == 1 || dropped % 1000 == 0)) {
+                    System.err.println("CRITICAL: OMS egress full (count or "
+                        + (OMS_EGRESS_MAX_BYTES >> 20) + "MB byte budget)! Dropped " + dropped +
+                        " OMS-bound settlement message(s). Recoverable via OMS reconciliation.");
+                }
+            }
+        }
+
+        @Override
+        public void flush() {
+            // Broadcast to ALL sessions - each client filters what it needs
+            List<ClientSession> sessions = clientSessions.getAllSessions();
+            if (sessions.isEmpty()) {
+                // Don't clear the queues — initial book snapshots / OMS settlement egress may be
+                // waiting for a gateway to connect. Both queues are bounded so this won't grow
+                // unbounded; the gateway uses the latest snapshot and re-reads egress on (re)connect.
+
+                // match#25 diag: queued egress with ZERO sessions to send to is the wedge
+                // signature (H2). Rate-limited so a genuinely sessionless cluster doesn't spam.
+                final int omsQ = omsEgressQueue.size();
+                final int mktQ = marketDataQueue.size();
+                if (omsQ > 0 || mktQ > 0) {
+                    final long now = System.currentTimeMillis();
+                    if (now - lastEmptyFlushDiagMs >= 2_000) {
+                        lastEmptyFlushDiagMs = now;
+                        System.out.println("EGRESS-DIAG flush-skipped: 0 sessions but queued omsQ="
+                                + omsQ + " mktQ=" + mktQ
+                                + " (role=" + (cluster != null ? cluster.role() : "null") + ")");
+                    }
+                }
+                return;
+            }
+
+            // Drain OMS-bound settlement egress FIRST (reliable, priority), then lossy UI market data.
+            // match#140: drainQueue now returns whether any session actually RECEIVED a frame (a
+            // positive offer), not merely whether a message was polled — so lastEgressSendMs (behind
+            // match_last_egress_age_ms) is stamped on real delivery, never on a poll that every
+            // session skipped. This closes the false-healthy signal for a full egress blackout.
+            boolean deliveredAny = drainQueue(omsEgressQueue, omsEgressBytes, sessions);
+            deliveredAny |= drainQueue(marketDataQueue, marketDataBytes, sessions);
+            // Refresh the per-session oldest-offer snapshot (service thread) for the age gauge.
+            egressSessionMetrics.recomputeOldestOffer();
+            if (deliveredAny) {
+                lastEgressSendMs = System.currentTimeMillis();
+            }
+        }
+
+        @Override
+        public boolean hasSubscribers() {
+            // Only leader should broadcast market data
+            if (cluster == null || cluster.role() != io.aeron.cluster.service.Cluster.Role.LEADER) {
+                return false;
+            }
+            // Check if any sessions are connected
+            return !clientSessions.getAllSessions().isEmpty();
+        }
+    };
+
+    // Drains queued egress to every connected session. Moved verbatim out of the aeronBroadcaster
+    // anonymous class onto the enclosing class (behavior identical, only re-indented) so the C-3
+    // per-drain cap has a package-private unit-test seam; the two call sites in flush() bind here.
+    //
+    // C-3: one call processes at most EGRESS_DRAIN_MAX messages. Without the cap a freshly promoted
+    // leader empties its entire warm-standby omsEgressQueue before it can process one new command,
+    // stalling the node at the worst moment (the AE 60s failover-blindness mechanism). The remainder
+    // stays queued and the next flush drains it; nothing is lost, only the per-cycle work is bounded.
+    // The return value and the per-message / per-session retry logic are unchanged.
+    boolean drainQueue(Queue<QueuedMessage> queue, AtomicLong queuedBytes, List<ClientSession> sessions) {
+        QueuedMessage msg;
+        // match#140: signal is now delivery-based, not poll-based. beginDrain() resets the
+        // per-drain flag; recordDelivered() (positive offer) sets it. The RETURN value tells
+        // flush() whether any session actually received a frame this drain.
+        egressSessionMetrics.beginDrain();
+        int processed = 0;
+        while (processed < EGRESS_DRAIN_MAX && (msg = queue.poll()) != null) {
+            queuedBytes.addAndGet(-msg.length);
+            broadcastBuffer.putBytes(0, msg.data, 0, msg.length);
+
+            // Send to all connected sessions
+            for (ClientSession session : sessions) {
+                int retries = 0;
+                while (retries < 3) {
+                    long result = session.offer(broadcastBuffer, 0, msg.length);
+                    if (result > 0) {
+                        // match#140: real delivery to this session — record its last-offer time.
+                        egressSessionMetrics.recordDelivered(session.id(), System.currentTimeMillis());
+                        break;
+                    } else if (result == Publication.BACK_PRESSURED || result == Publication.ADMIN_ACTION) {
+                        retries++;
+                        if (cluster != null) {
+                            cluster.idleStrategy().idle();
+                        }
+                    } else {
+                        // Session closed or not connected - skip it. Behavior UNCHANGED (still
+                        // break, no retry, nothing dropped differently). match#140: previously
+                        // this was invisible — count the disposition and per-session tally so a
+                        // whole session going dark is greppable + on /metrics.
+                        recordEgressSkip(session.id(), result);
+                        break;
+                    }
+                }
+                // match#115 audit: retries exhausted = the message was silently LOST for this
+                // session with no accounting anywhere — the exact "frames skip between emit and
+                // apply" shape. Count it loudly so egress loss is never invisible again.
+                if (retries >= 3) {
+                    long n = egressOfferGiveUps.incrementAndGet();
+                    if (n == 1 || n % 1000 == 0) {
+                        System.err.println("CRITICAL: egress offer gave up after " + retries
+                            + " backpressured retries (session=" + session.id() + ", len=" + msg.length
+                            + ", totalGiveUps=" + n + ") — frame lost; gateway will see a chain break");
+                    }
+                }
+            }
+            processed++;
+        }
+        // C-3: stopped early with work still queued, so this drain was capped. The backlog is
+        // deferred to the next flush (no loss). Count it (loud on the first hit and every 1000th)
+        // so a takeover inheriting a deep queue is observable; a value pinned high in steady state
+        // means egress cannot keep up with ingress.
+        if (processed >= EGRESS_DRAIN_MAX && !queue.isEmpty()) {
+            long n = drainCapped.incrementAndGet();
+            if (n == 1 || n % 1000 == 0) {
+                System.err.println("CRITICAL: egress drain hit per-cycle cap of " + EGRESS_DRAIN_MAX
+                    + " with messages still queued (remaining=" + queue.size()
+                    + ", cappedTotal=" + n + "); backlog deferred to the next flush (no loss)");
+            }
+        }
+        return egressSessionMetrics.deliveredThisDrain();
+    }
+
+    // C-3 config: env MATCH_EGRESS_DRAIN_MAX wins over -Dmatch.egress.drain.max wins over the default.
+    // Package-private and pure (takes the raw values) so the parse, the default, and the refusal are
+    // unit testable. An explicitly set but unparseable or non-positive value is refused at startup
+    // rather than silently defaulted (the strict-config house style; same posture as SnapshotCadence).
+    static int resolveEgressDrainMax(final String envValue, final String propValue) {
+        final String raw = envValue != null ? envValue : propValue;
+        if (raw == null) {
+            return DEFAULT_EGRESS_DRAIN_MAX;
+        }
+        final String source = envValue != null ? "MATCH_EGRESS_DRAIN_MAX" : "match.egress.drain.max";
+        final int value;
+        try {
+            value = Integer.parseInt(raw.trim());
+        } catch (final NumberFormatException e) {
+            throw new IllegalArgumentException(source + "=" + raw
+                    + " is not a valid integer; refusing to start with an ambiguous egress drain cap");
+        }
+        if (value <= 0) {
+            throw new IllegalArgumentException(source + "=" + value
+                    + " must be a positive per-drain message cap; refusing to start");
+        }
+        return value;
+    }
+
+    // package-private: lets the C-3 drain-cap test size its input to the configured cap.
+    static int egressDrainMax() {
+        return EGRESS_DRAIN_MAX;
+    }
+
+    // Slice C config: env MATCH_ENGINE_FROM_CONFIG wins over -Dmatch.engine.from.config; default
+    // false (legacy — bit-for-bit today's engine creation). Package-private and pure so the
+    // parse, the default, and the refusal are unit testable. Only the literal strings
+    // "true"/"false" are accepted: an explicitly set but ambiguous value is refused at startup
+    // rather than silently defaulted (the strict-config house style; same posture as
+    // resolveEgressDrainMax and the SnapshotCadence tunables).
+    static boolean resolveEngineFromConfigMode(final String envValue, final String propValue) {
+        final String raw = envValue != null ? envValue : propValue;
+        if (raw == null) {
+            return false;
+        }
+        final String source = envValue != null ? "MATCH_ENGINE_FROM_CONFIG" : "match.engine.from.config";
+        final String v = raw.trim().toLowerCase();
+        if ("true".equals(v)) {
+            return true;
+        }
+        if ("false".equals(v)) {
+            return false;
+        }
+        throw new IllegalArgumentException(source + "=" + raw
+                + " must be exactly \"true\" or \"false\"; refusing to start with an ambiguous"
+                + " engine-creation mode");
+    }
+
+    // package-private: metric source (match_egress_drain_capped_total) and C-3 test assertion.
+    long drainCappedTotal() {
+        return drainCapped.get();
+    }
+
+    @Override
+    public void onStart(final Cluster cluster, final Image snapshotImage) {
+        this.cluster = cluster;
+        context.setIdleStrategy(cluster.idleStrategy());
+        timerManager.setCluster(cluster);
+
+        System.out.println("SERVICE onStart: role=" + cluster.role() + ", memberId=" + cluster.memberId());
+        System.out.flush();
+
+        // Load snapshot if available
+        if (snapshotImage != null) {
+            loadSnapshot(snapshotImage);
+        }
+
+        // Initialize event publishing for all markets
+        initializeEventPublishing();
+
+        // P1.2 (match#31): OMS-requested open-order membership snapshot
+        sbeDemuxer.setOpenOrdersSnapshotRequestHandler(this::emitOpenOrdersSnapshot);
+
+        // Slice C: EngineConfig commands route to the decision table; a CreateOrder hitting the
+        // fresh-cluster guard (config mode, no engines yet) emits the deterministic REJECTED
+        // egress so the OMS hold releases.
+        sbeDemuxer.setEngineConfigHandler(engineConfigStateMachine::onEngineConfig);
+        sbeDemuxer.setPreConfigOrderRejectHandler(this::emitPreConfigOrderReject);
+
+        startMetricsServer();
+        startDurability(cluster);
+
+        System.out.println("SERVICE onStart complete, markets initialized");
+        System.out.flush();
+    }
+
+    /**
+     * Arm the snapshot rhythm and the log pruner.
+     *
+     * <p>Durability is not an add-on here: with no admin process in the picture,
+     * this is the only thing standing between a running engine and the disk it
+     * fills. Both are wired from the node's own Aeron client - no cluster
+     * directory to locate, no second JVM, nothing for an operator to remember to
+     * switch on.</p>
+     *
+     * <p>The cadence starts from {@code cluster.logPosition()}, which at this
+     * moment is the recovery position: the last snapshot's position on a node
+     * that recovered from one, 0 at genesis. Starting from 0 on a recovered node
+     * would make it believe the whole log had accumulated since its last
+     * snapshot and fire one immediately on every restart.</p>
+     */
+    private void startDurability(final Cluster cluster) {
+        try {
+            final int clusterId = cluster.context().clusterId();
+            snapshotCadence.bind(
+                    () -> com.openexchange.cluster.SnapshotCadence.findControlToggle(
+                            cluster.aeron(), clusterId),
+                    cluster.logPosition(), System.nanoTime());
+
+            if (com.openexchange.cluster.SnapshotCadence.booleanFromEnv(
+                    "SNAPSHOT_PRUNE_ENABLED", "snapshot.prune.enabled", true)) {
+                logPruner = new com.openexchange.cluster.SnapshotLogPruner(
+                        cluster.context().clusterDir(),
+                        cluster.context().archiveContext().clone(),
+                        cluster.aeron().countersReader(),
+                        clusterId,
+                        readiness::ready)
+                        // Computed on the leader after every snapshot and LOGGED, not
+                        // yet applied: it changes what gets deleted from a live ledger,
+                        // so the numbers get watched under real traffic first.
+                        .reportWatermark(
+                                com.openexchange.cluster.ClusterMemberPositions.from(
+                                        cluster.aeron(), cluster.context()),
+                                () -> isLeader);
+                logPruner.start();
+            } else {
+                System.out.println("[PRUNE] disabled by SNAPSHOT_PRUNE_ENABLED=false — "
+                        + "this node's cluster log will grow until something else purges it");
+            }
+        } catch (final Exception e) {
+            // Loud, and NOT fatal: a node that cannot arm its own durability is
+            // still a node that must serve orders. But it is exactly the failure
+            // that used to be invisible, so it is reported as what it is.
+            System.err.println("SERVICE CRITICAL: snapshot cadence/log pruner did not start — "
+                    + "this cluster will not snapshot or reclaim disk on its own: " + e);
+            e.printStackTrace();
+        }
+    }
+
+    /** match#33: node /metrics on METRICS_PORT (default 9500 + nodeId). */
+    private void startMetricsServer() {
+        // cluster.memberId() is -1 during onStart (not yet joined) — use the
+        // CLUSTER_NODE env / node.id prop, exactly like AeronCluster bootstrap.
+        int nodeId;
+        try {
+            String envNode = System.getenv("CLUSTER_NODE");
+            nodeId = Integer.parseInt(envNode != null ? envNode : System.getProperty("node.id", "0"));
+        } catch (NumberFormatException e) {
+            nodeId = 0;
+        }
+        nodeMetrics.setMemberId(nodeId);
+        nodeMetrics.setRole(cluster.role().code());
+        isLeader = cluster.role() == Cluster.Role.LEADER;
+        try {
+            String env = System.getenv("METRICS_PORT");
+            int port = env != null ? Integer.parseInt(env) : 9500 + nodeId;
+            metricsServer = new com.match.infrastructure.metrics.NodeMetricsServer(nodeMetrics)
+                    .counter("match_orders_submitted_total", "Orders admitted by the engine", sbeDemuxer::createOrderCount)
+                    .counter("match_ingress_schema_rejects_total",
+                            "Ingress frames dropped for a schemaId/version mismatch before decode (G-2)",
+                            sbeDemuxer::schemaRejectCount)
+                    .counter("match_ingress_decode_rejects_total",
+                            "Ingress frames dropped for a body-decode failure, e.g. an out-of-range enum byte (A-4)",
+                            sbeDemuxer::decodeRejectCount)
+                    .counter("match_ingress_apply_errors_total",
+                            "Ingress frames dropped because the engine/apply path threw an unexpected exception — a bug, ~always zero (A-4)",
+                            sbeDemuxer::applyErrorCount)
+                    // Slice C: behaviour-versioning surface. The gauge is the constant behavior
+                    // version set this build supports (just 1 for now); the counters are the
+                    // EngineConfig decision table + the fresh-cluster order guard.
+                    .gauge("match_supported_behavior_versions",
+                            "Behavior versions this build supports (constant 1 — version set {1}; slice C)",
+                            () -> 1L)
+                    .gauge("match_engine_from_config",
+                            "Engine-creation mode of THIS node (1 = config mode, 0 = legacy). A launch parameter like CLUSTER_ADDRESSES: it must be uniform across members — a mixed cluster forks replicated state on any pre-config order. The operator layer verifies uniformity here before admitting genesis traffic (slice C)",
+                            () -> engineFromConfigMode ? 1L : 0L)
+                    // #224: the EFFECTIVE engine-creation values — the recorded replicated config
+                    // when one exists, else the exact node-local derivation the adopt cross-check
+                    // compares against. Input for the operator layer's declared-vs-effective
+                    // precheck: cloud-console refuses to OFFER an adopt whose declared config does
+                    // not match the uniform effective values, so a wrong declared config can never
+                    // again fail-fast all members at once (2026-08-23). -1 = no effective values
+                    // yet (config mode before the first EngineConfig).
+                    .gauge("match_engine_effective_book_capacity",
+                            "Effective per-book order capacity of THIS node's engines (0 for impl=direct; -1 pre-config). Declared-vs-effective precheck input (#224)",
+                            engineConfigStateMachine::effectiveBookCapacity)
+                    .gauge("match_engine_effective_max_matches_per_order",
+                            "Effective per-order match cap of THIS node's engines (-1 pre-config). Declared-vs-effective precheck input (#224)",
+                            engineConfigStateMachine::effectiveMaxMatchesPerOrder)
+                    .gauge("match_engine_effective_max_orders_per_level",
+                            "Effective per-level order cap of THIS node's engines (0 for impl=array; -1 pre-config). Declared-vs-effective precheck input (#224)",
+                            engineConfigStateMachine::effectiveMaxOrdersPerLevel)
+                    .gauge("match_engine_effective_impl",
+                            "Effective engine implementation of THIS node as the EngineImpl wire value (0 = array, 1 = direct; -1 pre-config). Declared-vs-effective precheck input (#224)",
+                            engineConfigStateMachine::effectiveImplWire)
+                    .gaugeUnsigned("match_engine_effective_config_hash",
+                            "Canonical hash of THIS node's effective engine-creation config: SHA-256 of the canonical string (see EngineConfigState.canonicalString), first 8 bytes as unsigned 64-bit big-endian; 0 pre-config. Compare as text — identity, not magnitude (#224)",
+                            engineConfigStateMachine::effectiveConfigHash)
+                    .counter("match_engine_config_duplicates_total",
+                            "EngineConfig commands identical to the recorded config — idempotent no-op ACKs (slice C)",
+                            engineConfigStateMachine::duplicateCount)
+                    .counter("match_engine_config_rejects_total",
+                            "EngineConfig commands rejected: differ from the recorded config (runtime reconfig is a later slice) or structurally invalid (slice C)",
+                            engineConfigStateMachine::rejectCount)
+                    .counter("match_preconfig_order_rejects_total",
+                            "Order commands rejected by the fresh-cluster guard — arrived before any EngineConfig, no engine existed; always 0 in legacy mode (slice C)",
+                            sbeDemuxer::preConfigOrderRejectCount)
+                    .counter("match_orders_terminal_total", "Terminal order statuses published", eventPublisher::terminalStatusCount)
+                    .counter("match_egress_disruptor_exceptions_total",
+                            "OMS-lane Disruptor handler exceptions swallowed (event lost pre-statusSeq); should be ~zero (C-6)",
+                            eventPublisher::disruptorExceptionCount)
+                    .counter("match_overflow_rejects_total", "Orders rejected for fixed-point overflow", engine::getOverflowRejectCount)
+                    .counter("match_invalid_qty_rejects_total", "Orders rejected for non-positive quantity", engine::getInvalidQuantityRejectCount)
+                    .counter("match_trades_total", "Trades executed (trade id high-water mark)", eventPublisher::getTradeIdGenerator)
+                    .counter("match_dropped_market_msgs_total", "Lossy market-data egress drops", droppedMessages::get)
+                    .counter("match_follower_egress_skipped_total", "Lossy market-data egress skipped on followers (no consumer)", followerSkipped::get)
+                    .counter("match_dropped_oms_egress_total", "Reliable OMS egress drops (should stay 0)", droppedOmsEgress::get)
+                    .counter("match_egress_offer_giveups_total", "Frames lost to exhausted backpressure retries at session.offer (should stay 0)", egressOfferGiveUps::get)
+                    .counter("match_egress_drain_capped_total", "Egress drains that hit the C-3 per-cycle cap (EGRESS_DRAIN_MAX) with work still queued; backlog deferred to the next flush (no loss). Climbs during a leader takeover inheriting a deep queue", this::drainCappedTotal)
+                    .counter("match_publisher_dropped_trade_total", "Reliable OMS trade-egress dropped by market publishers (buffer-full or flush error; should stay 0)", eventPublisher::droppedTradeEgressTotal)
+                    .counter("match_publisher_dropped_status_total", "Reliable OMS status-egress dropped by market publishers (buffer-full or flush error; should stay 0)", eventPublisher::droppedStatusEgressTotal)
+                    .counter("match_unknown_timers_total", "Fired cluster timers with no runnable", timerManager::getUnknownTimerCount)
+                    .counter("match_flush_timer_fires_total", "Egress flush timer fires", () -> flushTimerFireCount)
+                    .counter("match_aeron_errors_total", "Aeron error handler invocations", AeronCluster.AERON_ERROR_COUNT::get)
+                    // Durability, scrapeable. With no admin gateway to ask, these four
+                    // are the whole answer to "is this cluster still writing restore
+                    // points and still reclaiming disk" — the question that went
+                    // unanswered for sixteen hours on 2026-07-25.
+                    .gauge("match_log_bytes_since_snapshot",
+                            "Cluster-log bytes written since the last snapshot; climbs to the "
+                            + "SNAPSHOT_LOG_BYTES threshold and drops back to 0",
+                            snapshotCadence::logBytesSinceSnapshot)
+                    .counter("match_snapshot_requests_total",
+                            "Snapshots this node requested while leading",
+                            snapshotCadence::requestCount)
+                    .counter("match_log_prunes_total",
+                            "Archive purges run on this node after a snapshot",
+                            () -> logPruner == null ? 0 : logPruner.prunesRun())
+                    .counter("match_log_bytes_reclaimed_total",
+                            "Cluster-log bytes reclaimed on this node; flat while the log grows "
+                            + "means the disk is filling",
+                            () -> logPruner == null ? 0 : logPruner.bytesReclaimed())
+                    .gauge("match_egress_queue_oms", "Queued reliable OMS egress messages", omsEgressQueue::size)
+                    .gauge("match_egress_queue_market", "Queued lossy market-data messages", marketDataQueue::size)
+                    .gauge("match_egress_queue_oms_bytes", "Bytes queued for OMS egress", omsEgressBytes::get)
+                    .gauge("match_egress_queue_market_bytes", "Bytes queued for market-data egress", marketDataBytes::get)
+                    .gauge("match_client_sessions", "Connected cluster client sessions", () -> clientSessions.getAllSessions().size())
+                    .gauge("match_last_egress_age_ms", "Milliseconds since the last egress send (leader only)",
+                            () -> lastEgressSendMs == 0 ? -1 : System.currentTimeMillis() - lastEgressSendMs)
+                    // match#140: per-session egress delivery observability. A session going dark
+                    // (NOT_CONNECTED/CLOSED/MAX_POSITION_EXCEEDED) was an invisible `break`; these
+                    // make a single-session blackout greppable + scrapeable. Aggregate + per-disposition.
+                    .counter("match_egress_session_skips_total",
+                            "Egress offers skipped for a non-backpressure disposition, all sessions (session went dark; match#140)",
+                            egressSessionMetrics::totalSkips)
+                    .counter("match_egress_skips_not_connected_total",
+                            "Egress offers skipped because the session was NOT_CONNECTED (match#140)",
+                            egressSessionMetrics::skipsNotConnected)
+                    .counter("match_egress_skips_closed_total",
+                            "Egress offers skipped because the session was CLOSED (match#140)",
+                            egressSessionMetrics::skipsClosed)
+                    .counter("match_egress_skips_max_position_total",
+                            "Egress offers skipped for MAX_POSITION_EXCEEDED (match#140)",
+                            egressSessionMetrics::skipsMaxPosition)
+                    .counter("match_egress_skips_other_total",
+                            "Egress offers skipped for any other non-positive disposition (match#140)",
+                            egressSessionMetrics::skipsOther)
+                    .gauge("match_egress_session_last_offer_age_ms",
+                            "Max ms since a successful per-session egress offer across sessions; climbs "
+                            + "during a single-session blackout while match_last_egress_age_ms stays "
+                            + "healthy (-1 = no session has delivered yet; match#140)",
+                            () -> egressSessionMetrics.maxSessionOfferAgeMs(System.currentTimeMillis()));
+            // One port, three answers. The metrics registry stays where it is;
+            // the endpoint just renders it alongside the probes.
+            nodeEndpoint = new com.openexchange.cluster.NodeEndpoint(readiness, metricsServer::render);
+            nodeEndpoint.start(port);
+        } catch (Exception e) {
+            // Metrics must never take a node down.
+            System.err.println("METRICS: failed to start node metrics server: " + e.getMessage());
+        }
+        // Started, but NOT ready: the snapshot is loaded and the log replay may
+        // still be running. Readiness waits for the first live role change,
+        // which Aeron delivers once recovery is behind us.
+        readiness.started();
+    }
+
+    // ---- P1.2 (match#31): open-order membership snapshot for OMS repair ----
+
+    private static final int OPEN_ORDERS_CHUNK = 512;
+    private final org.agrona.ExpandableArrayBuffer openOrdersBuffer = new org.agrona.ExpandableArrayBuffer(64 * 1024);
+    private final MessageHeaderEncoder openOrdersHeaderEncoder = new MessageHeaderEncoder();
+    private final com.match.infrastructure.generated.OpenOrdersSnapshotEncoder openOrdersEncoder =
+            new com.match.infrastructure.generated.OpenOrdersSnapshotEncoder();
+
+    /**
+     * Emit the full open-order membership set (cluster orderId + omsOrderId when
+     * known) as chunked OpenOrdersSnapshot egress. Runs on the service thread for
+     * every replica (the command is logged/deterministic) but mutates no state,
+     * and only the LEADER enqueues egress — followers have no sessions and must
+     * not fill their egress byte budget with output nobody drains.
+     *
+     * snapshotMaxOrderId is the orderId generator at emission time: the OMS only
+     * terminalizes absent orders BELOW this cutoff, so orders created after the
+     * snapshot can never be misclassified.
+     */
+    private void emitOpenOrdersSnapshot(long requestId) {
+        if (cluster == null || cluster.role() != Cluster.Role.LEADER) {
+            return;
+        }
+        final long snapshotMaxOrderId = engine.getOrderIdGenerator();
+
+        // Gather all resting orderIds (snapshot-codec enumeration: orderId is
+        // tuple slot 0 of every 4-long record). Rare repair path — allocation OK.
+        final java.util.ArrayList<long[]> sides = new java.util.ArrayList<>();
+        final Int2ObjectHashMap<com.match.application.orderbook.MatchingEngine> engines = engine.getEngines();
+        final Int2ObjectHashMap<com.match.application.orderbook.MatchingEngine>.ValueIterator it =
+                engines.values().iterator();
+        int total = 0;
+        while (it.hasNext()) {
+            final com.match.application.orderbook.MatchingEngine me = it.next();
+            final long[] bids = me.getBidOrders();
+            final long[] asks = me.getAskOrders();
+            sides.add(bids);
+            sides.add(asks);
+            total += bids.length / 4 + asks.length / 4;
+        }
+
+        int chunkIndex = 0;
+        int written = 0;
+        long[] chunk = new long[OPEN_ORDERS_CHUNK];
+        int inChunk = 0;
+        for (long[] side : sides) {
+            for (int i = 0; i < side.length; i += 4) {
+                chunk[inChunk++] = side[i];
+                written++;
+                if (inChunk == OPEN_ORDERS_CHUNK) {
+                    encodeAndSendOpenOrdersChunk(requestId, snapshotMaxOrderId, chunkIndex++,
+                            written == total, chunk, inChunk);
+                    inChunk = 0;
+                }
+            }
+        }
+        // Final (possibly empty) chunk always carries isLast so the OMS can
+        // complete reconciliation even with zero open orders.
+        if (inChunk > 0 || chunkIndex == 0) {
+            encodeAndSendOpenOrdersChunk(requestId, snapshotMaxOrderId, chunkIndex++, true, chunk, inChunk);
+        }
+        System.out.println("[P1.2] OpenOrdersSnapshot emitted: requestId=" + requestId
+                + " orders=" + total + " chunks=" + chunkIndex
+                + " maxOrderId=" + snapshotMaxOrderId);
+    }
+
+    private void encodeAndSendOpenOrdersChunk(long requestId, long snapshotMaxOrderId,
+                                              int chunkIndex, boolean isLast,
+                                              long[] orderIds, int count) {
+        openOrdersEncoder.wrapAndApplyHeader(openOrdersBuffer, 0, openOrdersHeaderEncoder)
+                .requestId(requestId)
+                .snapshotMaxOrderId(snapshotMaxOrderId)
+                .chunkIndex(chunkIndex)
+                .isLast((short) (isLast ? 1 : 0));
+        final com.match.infrastructure.generated.OpenOrdersSnapshotEncoder.OrdersEncoder group =
+                openOrdersEncoder.ordersCount(count);
+        for (int i = 0; i < count; i++) {
+            group.next()
+                    .orderId(orderIds[i])
+                    .omsOrderId(engine.getOmsOrderIdFor(orderIds[i]));
+        }
+        final int length = MessageHeaderEncoder.ENCODED_LENGTH + openOrdersEncoder.encodedLength();
+        aeronBroadcaster.broadcastReliable(openOrdersBuffer, 0, length);
+    }
+
+    private boolean flushTimerScheduled = false;
+
+    // Idle/trailing market-data flush + egress keep-warm cadence. Relaxed from 10ms
+    // (100 Hz) to 250ms (4 Hz): every flush-timer reschedule is a replicated cluster
+    // timer that enters the Raft log even when idle. This removes the timer's share of
+    // idle churn (~2.8 KB/s of the old ~3.9 KB/s; measured idle growth 3.9 -> ~1.2 KB/s).
+    // The remaining ~1.1 KB/s is a separate source (OMS still offers a logged
+    // GatewayHeartbeat ~10/s — fixed separately in the OMS repo, mirroring loud-limits).
+    // Active-trading latency is kept low by an unconditional opportunistic flush at the end of
+    // onSessionMessage — egress is only legal from log-driven callbacks,
+    // so a periodic timer is still required to cover idle markets, the trailing batch
+    // after trading stops, and resnapshot delivery to a client on a quiet market.
+    private static final long MARKET_DATA_FLUSH_INTERVAL_MS = 250;
+
+    // --- match#25 egress-wedge diagnostics (logging-only; NO behavior change) ---
+    // These never touch replicated state, scheduling, or control flow — they only
+    // emit System.out lines so we can pin the EXACT failing condition after repeated
+    // switchovers (dead flush chain vs empty clientSessions vs queue overflow).
+    private static final long EGRESS_DIAG_INTERVAL_MS = 5_000;   // leader-health heartbeat cadence
+    private long lastEgressDiagMs = 0;
+    private long lastEmptyFlushDiagMs = 0;
+    private long flushTimerFireCount = 0;   // onFlushTimer fires observed while LEADER (chain-alive proxy)
+
+    // Fixed, reserved correlationId for the single egress flush timer (match#25 fix). The flush
+    // chain is the ONLY cluster timer in the system and it self-reschedules forever. Using a
+    // CONSTANT id (recognized by value in onTimerEvent) instead of TimerManager's monotonic counter
+    // means every node recognizes this timer deterministically after recover/replay — eliminating
+    // the cross-node correlationId desync that made a freshly-armed timer fire as "unknown" and
+    // silently killed the chain (the egress wedge). 1e12 is far above any value the counter could
+    // ever reach (~4/s) so it can never collide, even across a mixed-version rolling deploy.
+    private static final long FLUSH_TIMER_CORRELATION_ID = 1_000_000_000_000L;
+
+    private void scheduleMarketDataFlush() {
+        final long deadline = System.currentTimeMillis() + MARKET_DATA_FLUSH_INTERVAL_MS;
+        // Schedule the fixed-id flush timer DIRECTLY (not via the TimerManager counter/runnable map,
+        // whose un-snapshotted runnable map is exactly what desynced across switchovers). Rescheduling
+        // the same id is idempotent — at most one pending flush timer cluster-wide. No-op on followers.
+        cluster.idleStrategy().reset();
+        while (!cluster.scheduleTimer(FLUSH_TIMER_CORRELATION_ID, deadline)) {
+            cluster.idleStrategy().idle();
+        }
+    }
+
+    private void onFlushTimer() {
+        if (cluster != null && cluster.role() == Cluster.Role.LEADER) {
+            aeronBroadcaster.flush();
+
+            // Egress keep-warm: idle markets produce no market data, but the
+            // gateway's stale-egress detection needs periodic egress traffic
+            long now = System.currentTimeMillis();
+            if (now - lastEgressSendMs >= EGRESS_KEEP_WARM_INTERVAL_MS
+                    && !clientSessions.getAllSessions().isEmpty()) {
+                sendEgressKeepWarm();
+                lastEgressSendMs = now;
+            }
+
+            // Periodic resnapshot (see PERIODIC_RESNAPSHOT_INTERVAL_MS): bounds how
+            // long a consumer whose delta chain broke can stay stale. Egress-side
+            // only (the generation counter never enters replicated state).
+            if (now - lastPeriodicResnapshotMs >= PERIODIC_RESNAPSHOT_INTERVAL_MS
+                    && !clientSessions.getAllSessions().isEmpty()) {
+                aeronBroadcaster.requestResnapshot();
+                lastPeriodicResnapshotMs = now;
+            }
+
+            // match#25 diag: leader-health heartbeat. The PRESENCE of this line confirms the
+            // flush chain is alive on the leader; if these lines STOP while a node is leader, the
+            // chain died (H1). sessions=0 with non-zero queues points at H2; climbing droppedOms/
+            // droppedMkt is H3; climbing unknownTimers means a fired timer lost its runnable.
+            flushTimerFireCount++;
+            if (now - lastEgressDiagMs >= EGRESS_DIAG_INTERVAL_MS) {
+                lastEgressDiagMs = now;
+                System.out.println("EGRESS-DIAG leader-health: sessions=" + clientSessions.getAllSessions().size()
+                        + " omsQ=" + omsEgressQueue.size() + " mktQ=" + marketDataQueue.size()
+                        + " droppedMkt=" + droppedMessages.get() + " droppedOms=" + droppedOmsEgress.get()
+                        + " submitted=" + sbeDemuxer.createOrderCount()
+                        + " terminal=" + eventPublisher.terminalStatusCount()
+                        + " overflowRej=" + engine.getOverflowRejectCount()
+                        + " invalidQtyRej=" + engine.getInvalidQuantityRejectCount()
+                        + " unknownTimers=" + timerManager.getUnknownTimerCount()
+                        + " flushFires=" + flushTimerFireCount
+                        + " lastEgressAgeMs=" + (now - lastEgressSendMs)
+                        + " flushTimerScheduled=" + flushTimerScheduled);
+            }
+        }
+        // match#33: publish plain-long metric writes to the scraper thread.
+        nodeMetrics.publish();
+        // Reschedule
+        scheduleMarketDataFlush();
+    }
+
+    /**
+     * Initialize LMAX Disruptor-based event publishing.
+     * Market data is broadcast via Aeron egress to connected clients (gateway).
+     * Gateway then relays to WebSocket clients.
+     */
+    private void initializeEventPublishing() {
+        // Slice C: in config mode the market set comes from the replicated config, not from
+        // MarketConfig.ALL_MARKETS. With no config recorded yet (fresh cluster) there is nothing
+        // to publish for — publishers come up in onEnginesCreatedFromConfig the moment the logged
+        // EngineConfig is accepted. Legacy mode falls through to the exact historical body below.
+        if (engineFromConfigMode) {
+            final com.match.application.engine.EngineConfigState config = engine.getEngineConfig();
+            if (config == null) {
+                System.out.println("SERVICE: config mode — no EngineConfig recorded yet; egress"
+                        + " publishers deferred until the config arrives (orders until then get a"
+                        + " loud REJECTED egress, never a silent drop)");
+                return;
+            }
+            initializeEventPublishingFromConfig(config);
+            return;
+        }
+        try {
+            // Create per-market publisher for all configured markets
+            for (MarketConfig config : MarketConfig.ALL_MARKETS) {
+                MarketPublisher publisher = new MarketPublisher(
+                    config.marketId,
+                    config.symbol,
+                    subscriptionManager
+                );
+
+                // Wire matching engine to publisher for direct order book access
+                // Order book snapshots are fetched every 50ms on publisher thread
+                publisher.setMatchingEngine(engine.getEngine(config.marketId));
+
+                // Use Aeron broadcaster instead of WebSocket
+                // Market data flows: Cluster → Aeron egress → Gateway → WebSocket → UI
+                publisher.setBroadcaster(aeronBroadcaster);
+
+                // Initialize Disruptor ring buffer for this market
+                eventPublisher.initMarket(config.marketId, publisher);
+
+                logger.info("Initialized publisher for {}", config.symbol);
+            }
+
+            // Wire publisher to engine (for trade events only)
+            engine.setEventPublisher(eventPublisher);
+
+            // Start the Disruptor (creates publisher threads)
+            eventPublisher.start();
+
+            logger.info("Event publishing initialized for {} markets with Aeron broadcaster",
+                MarketConfig.ALL_MARKETS.length);
+        } catch (Exception e) {
+            // A-9: fail-fast. An egress-less node keeps matching, but its trades and status never
+            // reach OMS/AE, so orders vanish silently, and its tradeId counter forks on a partially
+            // initialized replica. The node exits before joining the cluster instead of serving
+            // blind; the other two nodes keep quorum. If the cause is permanent this becomes a clean
+            // fail-fast loop for the operator to fix, not a silent half-alive node.
+            final String reason = e.getClass().getName() + ": " + e.getMessage();
+            final String critical = "CRITICAL: event publishing failed to initialize (" + reason
+                    + "); an egress-less node loses orders silently (OMS/AE never see them). "
+                    + "Exiting so this node never joins the cluster; the other two nodes keep quorum.";
+            logger.error(critical);
+            System.err.println(critical); // visible even if the logger is suppressed
+            e.printStackTrace();
+            // Through the failFast seam (hookless halt), NOT System.exit: this catch runs on the
+            // service thread inside onStart, where exit() deadlocks in shutdown hooks awaiting
+            // this very thread — the #223 zombie. Evidence is already on stderr above.
+            failFast.run();
+        }
+    }
+
+    /**
+     * Slice C: bring up per-market egress publishers for a CONFIG-created engine set — the exact
+     * shape of the legacy loop above, with the market list (id + symbol) taken from the
+     * replicated config instead of MarketConfig.ALL_MARKETS. Two callers, mutually exclusive by
+     * the state machine: onStart after restoring a config-bearing snapshot, and
+     * {@link #onEnginesCreatedFromConfig} when a fresh cluster accepts its logged EngineConfig.
+     * Failure is the same A-9 fail-fast: an egress-less node loses orders silently, so it exits
+     * before serving; the other nodes keep quorum.
+     */
+    private void initializeEventPublishingFromConfig(
+            final com.match.application.engine.EngineConfigState config) {
+        try {
+            for (com.match.application.engine.EngineConfigState.MarketDef market : config.markets) {
+                MarketPublisher publisher = new MarketPublisher(
+                    market.marketId,
+                    market.symbol,
+                    subscriptionManager
+                );
+                publisher.setMatchingEngine(engine.getEngine(market.marketId));
+                publisher.setBroadcaster(aeronBroadcaster);
+                eventPublisher.initMarket(market.marketId, publisher);
+                logger.info("Initialized publisher for {} (from EngineConfig)", market.symbol);
+            }
+
+            engine.setEventPublisher(eventPublisher);
+            eventPublisher.start();
+
+            logger.info("Event publishing initialized for {} markets from replicated EngineConfig",
+                config.markets.length);
+        } catch (Exception e) {
+            // A-9 principle, config path: see the legacy catch above for the full reasoning.
+            final String reason = e.getClass().getName() + ": " + e.getMessage();
+            final String critical = "CRITICAL: event publishing failed to initialize from"
+                    + " EngineConfig (" + reason + "); an egress-less node loses orders silently"
+                    + " (OMS/AE never see them). Exiting so this node never serves blind; the"
+                    + " other nodes keep quorum.";
+            logger.error(critical);
+            System.err.println(critical);
+            e.printStackTrace();
+            failFast.run();
+        }
+    }
+
+    /**
+     * Slice C: state-machine callback — a FRESH cluster just accepted its logged EngineConfig and
+     * created its engines from it. Runs on the service thread (live or replay). Publishers must
+     * come up now: nothing else will start them in config mode.
+     */
+    private void onEnginesCreatedFromConfig(final com.match.application.engine.EngineConfigState config) {
+        initializeEventPublishingFromConfig(config);
+    }
+
+    // ---- Slice C: fresh-cluster guard REJECTED egress ----
+
+    private final MessageHeaderEncoder preConfigRejectHeaderEncoder = new MessageHeaderEncoder();
+    private final com.match.infrastructure.generated.OrderStatusBatchEncoder preConfigRejectEncoder =
+            new com.match.infrastructure.generated.OrderStatusBatchEncoder();
+    private final org.agrona.ExpandableArrayBuffer preConfigRejectBuffer =
+            new org.agrona.ExpandableArrayBuffer(256);
+
+    /**
+     * Slice C fresh-cluster guard: emit the loud deterministic REJECTED OrderStatus for an order
+     * command that arrived BEFORE any EngineConfig (config-mode cluster, no engines yet).
+     * orderId=0 (no engine ever assigned one) + the command's omsOrderId, so the OMS correlates
+     * by omsOrderId and releases its hold — the silent-drop alternative leaves the hold stuck
+     * forever (the oms#21 failure class).
+     *
+     * <p>Encoded with the CLUSTER timestamp (message-level and per-entry), so the bytes are
+     * identical on every replica; statusSeq=0 because no per-market publisher (the statusSeq
+     * domain) exists yet — real sequences start at 1 once the config lands. Emitted through
+     * {@code broadcastReliable} on every node exactly like publisher status egress: the leader
+     * drains it, followers keep it as warm standby. Deliberately journal-exempt: there is no
+     * engine, no trade, and no resting order — the OMS-side release is the recovery path.</p>
+     */
+    private void emitPreConfigOrderReject(final int marketId, final long userId,
+                                          final long omsOrderId, final boolean isBuy,
+                                          final long timestamp) {
+        preConfigRejectEncoder.wrapAndApplyHeader(preConfigRejectBuffer, 0, preConfigRejectHeaderEncoder);
+        preConfigRejectEncoder
+                .marketId(marketId)
+                .timestamp(timestamp);
+        final com.match.infrastructure.generated.OrderStatusBatchEncoder.OrdersEncoder group =
+                preConfigRejectEncoder.ordersCount(1);
+        group.next()
+                .orderId(0L)
+                .userId(userId)
+                .status(com.match.infrastructure.generated.OrderStatus.REJECTED)
+                .price(0L)
+                .remainingQty(0L)
+                .filledQty(0L)
+                .side(isBuy ? com.match.infrastructure.generated.OrderSide.BID
+                            : com.match.infrastructure.generated.OrderSide.ASK)
+                .omsOrderId(omsOrderId)
+                .statusSeq(0L)
+                .rejectReason((short) com.match.application.orderbook.OrderRejectReason.ENGINE_NOT_CONFIGURED)
+                .egressSeq(engine.getCurrentLogPosition())
+                .clusterTimestamp(timestamp);
+        final int length = MessageHeaderEncoder.ENCODED_LENGTH + preConfigRejectEncoder.encodedLength();
+        aeronBroadcaster.broadcastReliable(preConfigRejectBuffer, 0, length);
+    }
+
+    private void loadSnapshot(final Image snapshotImage) {
+        System.out.println("[SNAPSHOT] loadSnapshot called, image position: " + snapshotImage.position());
+
+        // A-2 fix: the snapshot is offered as one OR MORE Aeron messages (chunked on the way out to
+        // stay under maxMessageLength). FragmentAssembler reassembles each MESSAGE from its MTU
+        // fragments; we then ACCUMULATE the reassembled messages, in arrival order, into one
+        // contiguous payload and decode it ONCE. The snapshot is written by a single
+        // ExclusivePublication → a single ordered image, so the concatenation is byte-identical to
+        // SnapshotCodec.serialize's output. Decoding per-message (the old behaviour) silently
+        // corrupted state the moment a snapshot spanned more than one chunk.
+        final ExpandableArrayBuffer accum = new ExpandableArrayBuffer();
+        final int[] accumLen = {0};
+        final io.aeron.FragmentAssembler assembler = new io.aeron.FragmentAssembler(
+            (buf, offset, length, header) -> {
+                accum.putBytes(accumLen[0], buf, offset, length);
+                accumLen[0] += length;
+            }
+        );
+
+        // Higher fragment limit shortens replay time on restart. Snapshots are one-shot at
+        // startup so spending more time inside one poll() call is fine.
+        int fragmentBatches = 0;
+        while (snapshotImage.poll(assembler, 64) > 0) {
+            fragmentBatches++;
+        }
+        System.out.println("[SNAPSHOT] Reassembled " + accumLen[0] + " byte(s) in "
+                + fragmentBatches + " poll batch(es)");
+
+        if (accumLen[0] > 0) {
+            processSnapshotPayload(accum, 0, accumLen[0]);
+        }
+    }
+
+    /**
+     * Process a complete (reassembled) snapshot payload.
+     * Separated from loadSnapshot for clarity — this expects the FULL snapshot
+     * data, not individual fragments.
+     */
+    private void processSnapshotPayload(final DirectBuffer buf, final int offset, final int length) {
+        // Decode via the shared codec (same class that wrote the bytes in onTakeSnapshot).
+        // The codec restores the engine's order books + order-id generator in place and hands
+        // back the scalars we own externally.
+        final SnapshotCodec.Decoded decoded = SnapshotCodec.deserialize(buf, offset, length, engine);
+
+        eventPublisher.setTradeIdGenerator(decoded.tradeIdGenerator);
+        System.out.println("[SNAPSHOT] Restored OrderIdGenerator=" + decoded.orderIdGenerator
+                + " TradeIdGenerator=" + decoded.tradeIdGenerator);
+
+        if (decoded.timerCorrelationIdPresent) {
+            // Legacy counter only — the egress flush timer uses a FIXED reserved correlationId
+            // (FLUSH_TIMER_CORRELATION_ID) recognized by value in onTimerEvent, so it re-arms
+            // deterministically (onRoleChange flag reset → onSessionOpen/onSessionMessage arm;
+            // the inherited pending fixed-id timer also continues the chain) and survives
+            // recover-into-leader WITHOUT the cross-node counter desync that used to silently
+            // kill it. A stray old-id timer re-delivered after recovery just routes to
+            // TimerManager and logs one harmless "unknown timer".
+            timerManager.setCorrelationId(decoded.timerCorrelationId);
+            System.out.println("[SNAPSHOT] Restored TimerCorrelationId (counter only): "
+                    + decoded.timerCorrelationId);
+        }
+
+        // Slice C: a config-bearing snapshot restored the recorded EngineConfig (and, on a
+        // config-mode node, rebuilt the engines from it — identically to the original creation).
+        // On a LEGACY-mode node the engines were env/compiled-built at construction, so run the
+        // same node-local cross-check as the adopt path: a node restarted with env or a build
+        // that diverges from the cluster's declared truth must exit here (fail-fast), never
+        // serve — HEALTHY is not the same as running the right config.
+        if (decoded.engineConfigPresent) {
+            System.out.println("[SNAPSHOT] Restored engineConfig: " + engine.getEngineConfig());
+            if (!engineFromConfigMode) {
+                engineConfigStateMachine.crossCheckOrExit(engine.getEngineConfig(), "snapshot-restore");
+            }
+        }
+
+        if (decoded.rejectedOrders > 0) {
+            System.err.println("[SNAPSHOT] ERROR: " + decoded.rejectedOrders
+                    + " orders DROPPED during restore (geometry mismatch?) — state loss!");
+        }
+
+        System.out.println("[SNAPSHOT] Snapshot load complete. Consumed "
+                + decoded.bytesConsumed + " bytes of " + length);
+    }
+
+    @Override
+    public void onSessionOpen(final ClientSession session, final long timestamp) {
+        context.setClusterTime(timestamp);
+        clientSessions.addSession(session);
+        System.out.println("New client session connected: " + session.id()
+                + " (total sessions=" + clientSessions.getAllSessions().size() + ")");   // match#25 diag: track session count
+
+        // A new session (gateway/OMS) needs full book state — trigger resnapshot.
+        // Session open is a logged cluster event, so this is deterministic across
+        // replicas (unlike the previous heartbeat-driven detection).
+        aeronBroadcaster.requestResnapshot();
+
+        // Arm the market data flush timer chain. Same lazy pattern as
+        // onSessionMessage: timers scheduled during replay are no-ops and the
+        // flag is reset in onRoleChange, so live events must (re-)arm it.
+        if (!flushTimerScheduled) {
+            scheduleMarketDataFlush();
+            flushTimerScheduled = true;
+            System.out.println("SERVICE: Market data flush timer scheduled (session open)");
+        }
+    }
+
+    @Override
+    public void onSessionClose(final ClientSession session, final long timestamp, final CloseReason closeReason) {
+        context.setClusterTime(timestamp);
+        clientSessions.removeSession(session);
+        // match#140: drop this session from per-session egress observability so a normally-closed
+        // session can never freeze match_egress_session_last_offer_age_ms high (stale last-offer ms).
+        egressSessionMetrics.removeSession(session.id());
+        System.out.println("Client session closed: " + session.id() + " reason=" + closeReason
+                + " (total sessions=" + clientSessions.getAllSessions().size() + ")");   // match#25 diag: track session count
+    }
+
+    @Override
+    public void onSessionMessage(
+        final ClientSession session,
+        final long timestamp,
+        final DirectBuffer buffer,
+        final int offset,
+        final int length,
+        final Header header) {
+
+        context.setSessionContext(session, timestamp);
+
+        // Book-version source for market data: the log position of this
+        // message (deterministic across replicas, monotonic across leaders).
+        engine.setCurrentLogPosition(header.position());
+
+        // match#33: sampled latency (1-in-16) — two nanoTime calls only on
+        // sampled messages; recording is plain-long writes on this thread.
+        final boolean sampled = nodeMetrics.shouldSample();
+        final long t0 = sampled ? System.nanoTime() : 0;
+        try {
+            sbeDemuxer.dispatch(buffer, offset, length, timestamp);
+        } catch (Exception e) {
+            // A-4: NEVER rethrow into Aeron. SbeDemuxer already catches decode failures and
+            // drops the frame internally, so nothing should reach here. If a future edit lets
+            // an Exception escape dispatch, we still must not let it out: a throw here does not
+            // crash the single frame but, on repeat, trips match's IDENTICAL_ERROR_EXIT_THRESHOLD
+            // halt(2) and can crash-loop the node on replay (a rolling-upgrade schema-skew
+            // trigger). Count the escaped frame as an ingress drop (scrapeable) and log loudly.
+            sbeDemuxer.recordDispatchEscape();
+            System.err.println("INGRESS DROP (dispatch escape): swallowed to keep the consensus "
+                    + "thread alive — " + e.getClass().getSimpleName() + ": " + e.getMessage());
+        }
+        if (sampled) {
+            nodeMetrics.recordOrderLatency(System.nanoTime() - t0);
+        }
+
+        // Schedule the idle/keep-warm flush timer lazily (can't schedule from onStart —
+        // cluster not ready).
+        if (!flushTimerScheduled) {
+            scheduleMarketDataFlush();
+            flushTimerScheduled = true;
+            System.out.println("SERVICE: Market data flush timer scheduled (" + MARKET_DATA_FLUSH_INTERVAL_MS + "ms)");
+            System.out.flush();
+        }
+
+        // Drain queued egress now that this message has been applied. Leader-only, pure egress
+        // output, mutates no replicated state and adds no log entries.
+        //
+        // This used to be wall-clock gated to once per 10ms, which cost a uniform 0-10ms wait on
+        // every client-visible order status (measured: 5.0ms at p50, and a p90 sitting exactly on
+        // the gate's full period). The gate existed to bound flush overhead, and it no longer needs
+        // to: MarketPublisher now assembles the OMS batches on its own Disruptor endOfBatch, so by
+        // the time a batch reaches this queue it is already a batch. Draining it per message moves
+        // bytes, it does not shrink batches.
+        //
+        // Draining unconditionally is also the correct shape for the constraint we are under:
+        // ClientSession.offer is only legal from a log-driven callback, so this is the ONLY place a
+        // leader can push egress at the rate work arrives.
+        if (cluster != null && cluster.role() == Cluster.Role.LEADER) {
+            aeronBroadcaster.flush();
+        }
+    }
+
+    /**
+     * match#140: shared per-session skip accounting for a non-positive, non-backpressure egress
+     * offer disposition (session went dark). Records the disposition counter + per-session tally in
+     * {@link EgressSessionMetrics} and emits a rate-limited System.err line (first skip per session,
+     * then every {@link EgressSessionMetrics#SKIP_LOG_INTERVAL}), mirroring the egressOfferGiveUps
+     * log style so a live single-session blackout is greppable. Observability only.
+     */
+    private void recordEgressSkip(final long sessionId, final long result) {
+        final long tally = egressSessionMetrics.recordSkip(sessionId, result);
+        if (EgressSessionMetrics.shouldLog(tally)) {
+            System.err.println("CRITICAL: egress session went dark — offer skipped (session=" + sessionId
+                + ", disposition=" + EgressSessionMetrics.dispositionName(result)
+                + ", sessionSkips=" + tally + ") — this session is receiving no egress; a single-session"
+                + " blackout is in progress (match_last_egress_age_ms can still read healthy if other"
+                + " sessions deliver — watch match_egress_session_last_offer_age_ms / _skips_total)");
+        }
+    }
+
+    /**
+     * Send a ClusterHeartbeat keep-warm to all sessions. Called from the flush
+     * timer when no egress has been sent for EGRESS_KEEP_WARM_INTERVAL_MS.
+     * Egress-only side effect — does not touch replicated state.
+     */
+    private void sendEgressKeepWarm() {
+        keepWarmEncoder.wrapAndApplyHeader(keepWarmBuffer, 0, keepWarmHeaderEncoder);
+        keepWarmEncoder
+            // v8: nodeId is uint8 on the wire (member ids are 0-2); SBE's Java codec
+            // takes uint8 as short.
+            .nodeId((short) cluster.memberId())
+            .timestamp(System.currentTimeMillis());
+        int length = MessageHeaderEncoder.ENCODED_LENGTH + keepWarmEncoder.encodedLength();
+
+        for (ClientSession session : clientSessions.getAllSessions()) {
+            // Best-effort send - don't block or retry. Behavior UNCHANGED; match#140 only observes
+            // the result: a positive offer refreshes the session's last-offer age, and a dark
+            // disposition (NOT_CONNECTED/CLOSED/MAX_POSITION_EXCEEDED) is fed through the same skip
+            // accounting so a session that only ever sees failed heartbeats is still visible.
+            // Transient BACK_PRESSURED/ADMIN_ACTION on a best-effort heartbeat is neither (matches
+            // drainQueue's classification: those are the retry branch there, not a dark skip).
+            final long result = session.offer(keepWarmBuffer, 0, length);
+            if (result > 0) {
+                egressSessionMetrics.recordDelivered(session.id(), System.currentTimeMillis());
+            } else if (result != Publication.BACK_PRESSURED && result != Publication.ADMIN_ACTION) {
+                recordEgressSkip(session.id(), result);
+            }
+        }
+    }
+
+    @Override
+    public void onTimerEvent(final long correlationId, final long timestamp) {
+        context.setClusterTime(timestamp);
+        // match#25 fix: the egress flush timer is recognized by its FIXED reserved id, NOT via the
+        // TimerManager runnable map (which isn't restored on recovery — the desync source). This makes
+        // onFlushTimer fire deterministically on EVERY node after any recover/replay, so the chain
+        // cannot silently die. Any other timer id still routes through TimerManager.
+        if (correlationId == FLUSH_TIMER_CORRELATION_ID) {
+            onFlushTimer();
+            return;
+        }
+        timerManager.onTimerEvent(correlationId, timestamp);
+    }
+
+    @Override
+    public void onTakeSnapshot(final ExclusivePublication snapshotPublication) {
+        System.out.println("[SNAPSHOT] onTakeSnapshot called");
+
+        // Serialize engine state via the shared codec. SnapshotCodec is the single source of
+        // truth for the snapshot byte layout — the same class decodes it on recovery, so encode
+        // and decode can never drift. Byte format is identical to the historical inline encoder.
+        final ExpandableArrayBuffer buffer = new ExpandableArrayBuffer();
+        final long orderId = engine.getOrderIdGenerator();
+        final long tradeId = eventPublisher.getTradeIdGenerator();
+        final long timerCorrelationId = timerManager.getCorrelationId();
+        final int pos = SnapshotCodec.serialize(engine, tradeId, timerCorrelationId, buffer);
+
+        System.out.println("[SNAPSHOT] OrderIdGenerator=" + orderId
+                + " TradeIdGenerator=" + tradeId
+                + " markets=" + engine.getEngines().size()
+                + " TimerCorrelationId=" + timerCorrelationId
+                + " totalBytes=" + pos);
+
+        // A-2 fix: CHUNK the snapshot. A single offer() throws IllegalArgumentException the moment
+        // the payload exceeds the publication's maxMessageLength (snapshot term / 8) — and the old
+        // retry loop only caught NEGATIVE-return back-pressure, never the size-exceeded throw, so a
+        // snapshot larger than maxMessageLength failed PERMANENTLY (log never pruned, tmpfs fills).
+        // Splitting into maxMessageLength-sized messages keeps every offer legal; a payload that
+        // already fits is sent as one message (byte-identical to the historical single-offer path).
+        // The bounded 30s retry — a wedged publication used to spin forever — is preserved across
+        // ALL chunks as one overall deadline. Byte format is unchanged; the receiver reassembles.
+        final long startMs = System.currentTimeMillis();
+        final int chunks = offerSnapshotChunked(snapshotPublication, buffer, pos, cluster.idleStrategy());
+        System.out.println("[SNAPSHOT] Publication complete: " + pos + " byte(s) in " + chunks
+                + " chunk(s) (maxMessageLength=" + snapshotPublication.maxMessageLength() + ") in "
+                + (System.currentTimeMillis() - startMs) + "ms");
+
+        // Block until the Aeron Archive has read all the bytes we offered into its on-disk
+        // recording file. Without this, onTakeSnapshot returns while the recording is still in
+        // flight; if the node is killed before Archive flushes the catalog stopPosition, the
+        // recording is pruned on restart and recovery fails with `unknown recording id`. See
+        // /tmp/cluster-forensic2-033046/ROOT-CAUSE-V2.md for the full repro.
+        awaitSnapshotRecorded(snapshotPublication);
+        nodeMetrics.stampSnapshot(System.currentTimeMillis()); // match#33: wall-clock stamp, metrics only
+        // The baseline for the next snapshot, on EVERY member and whoever asked
+        // for this one — a snapshot taken by ClusterTool has to reset the rhythm
+        // exactly like one this node requested.
+        snapshotCadence.snapshotTaken(cluster.logPosition(), System.nanoTime());
+    }
+
+    /**
+     * Offer a serialized snapshot payload as one or more Aeron messages, each no larger than the
+     * publication's {@code maxMessageLength} (the snapshot channel's term length / 8). Extracted
+     * from {@link #onTakeSnapshot} so the multi-chunk transport path is unit-testable against a real
+     * Aeron publication (see {@code SnapshotChunkingTransportTest}).
+     *
+     * <p>When {@code pos <= maxMessageLength} exactly one message is offered — byte-identical to the
+     * historical single-offer snapshot, so no regression for the common case. The bounded 30s retry
+     * is shared across every chunk (one overall deadline) so a wedged publication fails loudly
+     * instead of spinning forever. Chunk COUNT is a purely local I/O detail — each node splits with
+     * its own {@code maxMessageLength} and the receiver reassembles by raw byte concatenation, so
+     * there is deliberately no cross-node framing or alignment.</p>
+     *
+     * @return the number of chunks (messages) offered.
+     */
+    static int offerSnapshotChunked(final ExclusivePublication snapshotPublication,
+                                    final DirectBuffer buffer, final int pos,
+                                    final org.agrona.concurrent.IdleStrategy idleStrategy) {
+        final int maxLen = snapshotPublication.maxMessageLength();
+        int sent = 0;
+        int chunks = 0;
+        long attempts = 0;
+        final long deadlineMs = System.currentTimeMillis() + 30_000;
+        while (sent < pos) {
+            final int chunk = Math.min(maxLen, pos - sent);
+            long result;
+            while ((result = snapshotPublication.offer(buffer, sent, chunk)) < 0) {
+                attempts++;
+                if (System.currentTimeMillis() > deadlineMs) {
+                    throw new IllegalStateException("Snapshot offer stuck after 30s: lastResult=" + result
+                            + ", attempts=" + attempts + ", sent=" + sent + "/" + pos + " bytes");
+                }
+                idleStrategy.idle();
+            }
+            sent += chunk;
+            chunks++;
+        }
+        return chunks;
+    }
+
+    /**
+     * Wait for the Archive's recording subscription to ingest the snapshot we just published.
+     * Blocks until {@code recordingPosition >= snapshotPublication.position()} or 10s elapses.
+     */
+    private void awaitSnapshotRecorded(final ExclusivePublication snapshotPublication) {
+        final long writtenPosition = snapshotPublication.position();
+        if (writtenPosition <= 0) {
+            return;
+        }
+
+        if (snapshotArchive == null) {
+            // Clone so we don't share lock state with the cluster's own archive client.
+            snapshotArchive = AeronArchive.connect(cluster.context().archiveContext().clone());
+        }
+
+        final String channel = snapshotPublication.channel();
+        final int streamId = snapshotPublication.streamId();
+        final int sessionId = snapshotPublication.sessionId();
+        final long startMs = System.currentTimeMillis();
+        final long deadlineMs = startMs + 10_000;
+
+        // 1) Wait for the Archive to register the recording for this publication's session.
+        long recordingId;
+        while ((recordingId = snapshotArchive.findLastMatchingRecording(0L, channel, streamId, sessionId))
+                == Aeron.NULL_VALUE) {
+            if (System.currentTimeMillis() > deadlineMs) {
+                throw new IllegalStateException("Snapshot recording not registered within 10s "
+                        + "(channel=" + channel + " stream=" + streamId + " session=" + sessionId + ")");
+            }
+            cluster.idleStrategy().idle();
+        }
+
+        // 2) Wait for the Archive to ingest every byte we offered.
+        long observedPosition;
+        while ((observedPosition = snapshotArchive.getRecordingPosition(recordingId)) < writtenPosition) {
+            if (System.currentTimeMillis() > deadlineMs) {
+                throw new IllegalStateException("Archive ingestion stalled: recordingId=" + recordingId
+                        + " written=" + writtenPosition + " recorded=" + observedPosition);
+            }
+            cluster.idleStrategy().idle();
+        }
+
+        System.out.println("[SNAPSHOT] Archive ingested recordingId=" + recordingId
+                + " position=" + observedPosition + " in "
+                + (System.currentTimeMillis() - startMs) + "ms");
+    }
+
+    @Override
+    public void onRoleChange(final Role newRole) {
+        // match#25 diag: snapshot egress state at EVERY role transition (flushTimerScheduled read
+        // pre-reset). Lets us see, per switchover, whether sessions/queues/timer-state degrade.
+        System.out.println("SERVICE onRoleChange: " + newRole
+                + " [EGRESS-DIAG sessions=" + clientSessions.getAllSessions().size()
+                + " flushTimerScheduled(pre-reset)=" + flushTimerScheduled
+                + " omsQ=" + omsEgressQueue.size() + " mktQ=" + marketDataQueue.size()
+                + " droppedMkt=" + droppedMessages.get() + " droppedOms=" + droppedOmsEgress.get()
+                + " submitted=" + sbeDemuxer.createOrderCount()
+                + " terminal=" + eventPublisher.terminalStatusCount()
+                + " overflowRej=" + engine.getOverflowRejectCount()
+                + " invalidQtyRej=" + engine.getInvalidQuantityRejectCount()
+                + " unknownTimers=" + timerManager.getUnknownTimerCount()
+                + " flushFires=" + flushTimerFireCount + "]");
+        System.out.flush();
+        nodeMetrics.setRole(newRole.code());
+        isLeader = newRole == Cluster.Role.LEADER;
+        // A live role is also the signal that recovery is behind us; CANDIDATE
+        // withdraws readiness, which is exactly when a rolling restart must wait.
+        readiness.roleChanged(newRole);
+        // A member that is no longer leader drops any snapshot request it was
+        // waiting on: the consensus module reads that toggle only while leading,
+        // so a request left in flight would block this node's cadence forever.
+        snapshotCadence.roleChanged(isLeader);
+        // Always re-arm the flush timer chain on a role change. The chain is a
+        // self-rescheduling cluster timer that only the LEADER schedules (a follower's
+        // scheduleTimer is a no-op) and that does NOT survive a snapshot recover-into-leader
+        // transition. Resetting the flag guarantees the next live onSessionOpen/
+        // onSessionMessage arms exactly ONE fresh chain. Since loadSnapshot no longer
+        // restores a timer, there is no duplicate-chain risk. If this is missed, the leader
+        // sends no idle egress keep-warm and clients fall into stale-egress reconnect loops.
+        flushTimerScheduled = false;
+    }
+
+    @Override
+    public int doBackgroundWork(final long nowNs) {
+        // Called every duty cycle on every member, busy or idle. This is the
+        // only signal that separates "quiet market" from "agent thread wedged",
+        // and the wedged case is the one that used to report itself healthy for
+        // hours. No work is done here beyond stamping the clock.
+        readiness.tick();
+        // cluster-kit#15: feed readiness by POLLING the role, never by trusting
+        // onRoleChange alone. Aeron fires that callback only on role TRANSITIONS,
+        // so a node that boots straight into FOLLOWER and stays there never gets
+        // it: /ready answered "catching up" forever and SnapshotLogPruner never
+        // pruned on that node (observed live 2026-08-12). An enum compare per
+        // cycle is free; the callback keeps its other side effects (isLeader,
+        // cadence, flush timer) and readiness.roleChanged is idempotent.
+        final Role observedRole = cluster.role();
+        if (observedRole != lastObservedRole) {
+            lastObservedRole = observedRole;
+            readiness.roleChanged(observedRole);
+            if (observedRole == Role.LEADER || observedRole == Role.FOLLOWER) {
+                System.out.println("READINESS: role " + observedRole
+                        + " observed via duty-cycle poll (cluster-kit#15)");
+            }
+        }
+        // ...and deciding, at most once a second and only on the leader, whether
+        // the cluster is due a snapshot. Everything past that gate is a long
+        // compare; nothing is allocated and nothing blocks.
+        return snapshotCadence.tick(nowNs, isLeader, cluster.logPosition());
+    }
+
+    @Override
+    public void onTerminate(final Cluster cluster) {
+        readiness.stopping();
+        if (logPruner != null) {
+            logPruner.stop();
+        }
+        if (nodeEndpoint != null) {
+            nodeEndpoint.stop();
+        }
+        if (metricsServer != null) {
+            metricsServer.stop();
+        }
+        if (snapshotArchive != null) {
+            CloseHelper.quietClose(snapshotArchive);
+            snapshotArchive = null;
+        }
+        eventPublisher.shutdown();
+        engine.close();
+    }
+}

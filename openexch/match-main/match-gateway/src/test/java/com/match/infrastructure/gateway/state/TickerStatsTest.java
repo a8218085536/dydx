@@ -1,0 +1,268 @@
+// SPDX-License-Identifier: Apache-2.0
+package com.match.infrastructure.gateway.state;
+
+import com.google.gson.JsonObject;
+import com.google.gson.JsonParser;
+import org.junit.Before;
+import org.junit.Test;
+
+import static org.junit.Assert.*;
+
+/**
+ * Tests for TickerStats: trade accumulation, high/low tracking, JSON output.
+ */
+public class TickerStatsTest {
+
+    private TickerStats ticker;
+
+    @Before
+    public void setUp() {
+        ticker = new TickerStats(1, "BTC-USD");
+    }
+
+    // ==================== Initial State ====================
+
+    @Test
+    public void testInitialState_HasDataFalse() {
+        assertFalse(ticker.hasData());
+    }
+
+    @Test
+    public void testInitialState_LastPriceZero() {
+        assertEquals(0.0, ticker.getLastPrice(), 0.0001);
+    }
+
+    @Test
+    public void testInitialState_ToJson_ReturnsEmptyJson() {
+        String json = ticker.toJson();
+        assertNotNull(json);
+        assertTrue(json.contains("TICKER_STATS"));
+        assertTrue(json.contains("\"marketId\":1"));
+        assertTrue(json.contains("\"market\":\"ETH/USDT\""));
+    }
+
+    @Test
+    public void testInitialState_UnknownStatsAreNullInsteadOfZero() {
+        JsonObject json = JsonParser.parseString(ticker.toJson()).getAsJsonObject();
+
+        assertTrue(json.get("lastPrice").isJsonNull());
+        assertTrue(json.get("indexPrice").isJsonNull());
+        assertTrue(json.get("priceChange").isJsonNull());
+        assertTrue(json.get("priceChangePercent").isJsonNull());
+        assertTrue(json.get("priceChangePercent1h").isJsonNull());
+        assertTrue(json.get("tradeCount24h").isJsonNull());
+        assertTrue(json.get("high24h").isJsonNull());
+        assertTrue(json.get("low24h").isJsonNull());
+        assertTrue(json.get("volume24h").isJsonNull());
+        assertTrue(json.get("timestamp").isJsonNull());
+    }
+
+    // ==================== updateFromTrade: first trade ====================
+
+    @Test
+    public void testUpdateFromTrade_FirstTrade_SetsAllPrices() {
+        ticker.updateFromTrade(50000.0, 1.0);
+
+        assertTrue(ticker.hasData());
+        assertEquals(50000.0, ticker.getLastPrice(), 0.0001);
+    }
+
+    @Test
+    public void testUpdateFromTrade_FirstTrade_JsonShowsCorrectValues() {
+        ticker.updateFromTrade(50000.0, 1.0);
+
+        String json = ticker.toJson();
+        assertNotNull(json);
+        assertTrue(json.contains("50000.0"));
+        // open = last = high = low = 50000.0, so priceChange = 0
+        assertTrue(json.contains("\"priceChange\":0.0"));
+    }
+
+    // ==================== Multiple trades: high/low tracking ====================
+
+    @Test
+    public void testMultipleTrades_HighTracked() {
+        ticker.updateFromTrade(100.0, 1.0);
+        ticker.updateFromTrade(150.0, 1.0);
+        ticker.updateFromTrade(120.0, 1.0);
+
+        // High should be 150
+        String json = ticker.toJson();
+        assertTrue(json.contains("150.0"));
+    }
+
+    @Test
+    public void testMultipleTrades_LowTracked() {
+        ticker.updateFromTrade(100.0, 1.0);
+        ticker.updateFromTrade(50.0, 1.0);
+        ticker.updateFromTrade(80.0, 1.0);
+
+        // Low should be 50
+        String json = ticker.toJson();
+        assertTrue(json.contains("50.0"));
+    }
+
+    @Test
+    public void testMultipleTrades_LastPriceUpdated() {
+        ticker.updateFromTrade(100.0, 1.0);
+        ticker.updateFromTrade(200.0, 1.0);
+        ticker.updateFromTrade(150.0, 1.0);
+
+        assertEquals(150.0, ticker.getLastPrice(), 0.0001);
+    }
+
+    // ==================== Volume accumulation ====================
+
+    @Test
+    public void testVolumeAccumulates() {
+        // Volume = sum of (price * quantity) for each trade
+        ticker.updateFromTrade(100.0, 2.0);  // 200.0
+        ticker.updateFromTrade(150.0, 3.0);  // 450.0
+        // Total volume = 650.0
+
+        String json = ticker.toJson();
+        assertTrue(json.contains("650.0"));
+    }
+
+    // ==================== toJson: all fields ====================
+
+    @Test
+    public void testToJson_ContainsAllExpectedFields() {
+        ticker.updateFromTrade(100.0, 1.0);
+        ticker.updateFromTrade(120.0, 2.0);
+
+        String json = ticker.toJson();
+        assertTrue(json.contains("\"type\":\"TICKER_STATS\""));
+        assertTrue(json.contains("\"marketId\":1"));
+        assertTrue(json.contains("\"market\":\"ETH/USDT\""));
+        assertTrue(json.contains("\"lastPrice\":"));
+        assertTrue(json.contains("\"priceChange\":"));
+        assertTrue(json.contains("\"priceChangePercent\":"));
+        assertTrue(json.contains("\"high24h\":"));
+        assertTrue(json.contains("\"low24h\":"));
+        assertTrue(json.contains("\"volume24h\":"));
+        assertTrue(json.contains("\"timestamp\":"));
+    }
+
+    @Test
+    public void testToJson_ContainsExpandedMarketStatsFields() {
+        ticker.updateFromTrade(100.0, 1.0);
+
+        JsonObject json = JsonParser.parseString(ticker.toJson()).getAsJsonObject();
+        assertTrue(json.has("indexPrice"));
+        assertTrue(json.has("priceChangePercent1h"));
+        assertTrue(json.has("tradeCount24h"));
+        assertTrue(json.has("openInterest"));
+        assertTrue(json.has("fundingRate"));
+        assertTrue(json.has("nextFundingTime"));
+    }
+
+    @Test
+    public void testToJson_PriceChange_Calculated() {
+        ticker.updateFromTrade(100.0, 1.0);  // open = 100
+        ticker.updateFromTrade(120.0, 1.0);  // last = 120
+        // priceChange = 120 - 100 = 20
+        // priceChangePercent = 20 / 100 * 100 = 20.0
+
+        String json = ticker.toJson();
+        assertTrue(json.contains("\"priceChange\":20.0"));
+        assertTrue(json.contains("\"priceChangePercent\":20.0"));
+    }
+
+    @Test
+    public void testToJson_PriceDecrease() {
+        ticker.updateFromTrade(100.0, 1.0);  // open = 100
+        ticker.updateFromTrade(80.0, 1.0);   // last = 80
+        // priceChange = -20
+
+        String json = ticker.toJson();
+        assertTrue(json.contains("\"priceChange\":-20.0"));
+    }
+
+    // ==================== hasData ====================
+
+    @Test
+    public void testHasData_FalseInitially_TrueAfterTrade() {
+        assertFalse(ticker.hasData());
+        ticker.updateFromTrade(100.0, 1.0);
+        assertTrue(ticker.hasData());
+    }
+
+    // ==================== DB rolling-24h baseline ====================
+
+    @Test
+    public void testApplyDbBaseline_ReportsRolling24hFigures() {
+        long now = System.currentTimeMillis();
+        ticker.applyDbBaseline(90.0, 120.0, 80.0, 5000.0, 100.0, now);
+
+        String json = ticker.toJson();
+        assertTrue(json.contains("\"high24h\":120.0"));
+        assertTrue(json.contains("\"low24h\":80.0"));
+        assertTrue(json.contains("\"volume24h\":5000.00"));
+        // priceChange vs open-24h-ago (lastPrice seeded from lastClose)
+        assertTrue(json.contains("\"lastPrice\":100.0"));
+        assertTrue(json.contains("\"priceChange\":10.0"));
+    }
+
+    @Test
+    public void testApplyDbBaseline_SeedsLastPriceAfterRestart() {
+        assertFalse(ticker.hasData());
+        ticker.applyDbBaseline(90.0, 120.0, 80.0, 5000.0, 100.0, System.currentTimeMillis());
+        assertTrue(ticker.hasData());
+        assertEquals(100.0, ticker.getLastPrice(), 0.0001);
+    }
+
+    @Test
+    public void testApplyDbBaseline_MergesWithLiveTrades() {
+        ticker.applyDbBaseline(90.0, 120.0, 80.0, 5000.0, 100.0, System.currentTimeMillis());
+
+        ticker.updateFromTrade(130.0, 2.0); // above db high, adds 260 quote volume
+        ticker.updateFromTrade(70.0, 1.0);  // below db low, adds 70 quote volume
+
+        String json = ticker.toJson();
+        assertTrue(json.contains("\"high24h\":130.0"));
+        assertTrue(json.contains("\"low24h\":70.0"));
+        assertTrue(json.contains("\"volume24h\":5330.00"));
+        assertTrue(json.contains("\"lastPrice\":70.0"));
+    }
+
+    @Test
+    public void testApplyDbBaseline_RefreshResetsLiveAccumulators() {
+        ticker.applyDbBaseline(90.0, 120.0, 80.0, 5000.0, 100.0, System.currentTimeMillis());
+        ticker.updateFromTrade(130.0, 2.0);
+        // Next baseline already includes that trade's minute: live must reset
+        ticker.applyDbBaseline(90.0, 130.0, 80.0, 5260.0, 130.0, System.currentTimeMillis());
+
+        String json = ticker.toJson();
+        assertTrue(json.contains("\"high24h\":130.0"));
+        assertTrue(json.contains("\"volume24h\":5260.00"));
+    }
+
+    @Test
+    public void testStaleBaseline_FallsBackToLegacySemantics() {
+        long stale = System.currentTimeMillis() - TickerStats.BASELINE_FRESH_MS - 1_000;
+        ticker.applyDbBaseline(90.0, 120.0, 80.0, 5000.0, 100.0, stale);
+        ticker.updateFromTrade(100.0, 1.0);
+        ticker.updateFromTrade(105.0, 1.0);
+
+        String json = ticker.toJson();
+        // Stale baseline -> legacy accumulation: the DB's 5000 quote volume is
+        // NOT reported, only what this process has seen (100 + 105). The
+        // high/low seeded into the legacy fields at apply time still count.
+        assertTrue(json.contains("\"volume24h\":205.00"));
+        assertTrue(json.contains("\"high24h\":120.0"));
+        assertTrue(json.contains("\"priceChange\":15.0")); // vs seeded open 90
+    }
+
+    @Test
+    public void testBaselineWithEmptyDb_LiveTradesStillReported() {
+        // Fresh market: DB has no candles yet -> baseline is all zeros
+        ticker.applyDbBaseline(0, 0, 0, 0, 0, System.currentTimeMillis());
+        ticker.updateFromTrade(50.0, 2.0);
+
+        String json = ticker.toJson();
+        assertTrue(json.contains("\"high24h\":50.0"));
+        assertTrue(json.contains("\"low24h\":50.0"));
+        assertTrue(json.contains("\"volume24h\":100.00"));
+    }
+}

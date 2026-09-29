@@ -1,0 +1,334 @@
+// SPDX-License-Identifier: Apache-2.0
+package com.match.infrastructure.gateway;
+
+import com.match.infrastructure.gateway.state.GatewayStateManager;
+import io.netty.buffer.Unpooled;
+import io.netty.channel.ChannelFutureListener;
+import io.netty.channel.ChannelHandler;
+import io.netty.channel.ChannelHandlerContext;
+import io.netty.channel.SimpleChannelInboundHandler;
+import io.netty.handler.codec.http.*;
+import io.netty.util.CharsetUtil;
+
+/**
+ * HTTP handler for REST API endpoints on Market Gateway.
+ * Handles requests before WebSocket upgrade.
+ * Endpoints:
+ * - GET /api/orderbook - Current order book
+ * - GET /api/trades?limit=N - Recent trades
+ * - GET /api/tickers - 24h ticker statistics for all markets
+ * - GET /v4/sparklines?timePeriod=ONE_DAY - dYdX-compatible close-price arrays
+ * - GET /health - Gateway health check
+ */
+@ChannelHandler.Sharable
+public class GatewayHttpHandler extends SimpleChannelInboundHandler<FullHttpRequest> {
+    private final GatewayStateManager stateManager;
+    private final com.match.infrastructure.websocket.MarketDataWebSocket webSocket;
+    private final AeronGateway aeronGateway;
+
+    public GatewayHttpHandler(GatewayStateManager stateManager) {
+        this(stateManager, null, null);
+    }
+
+    public GatewayHttpHandler(GatewayStateManager stateManager,
+                              com.match.infrastructure.websocket.MarketDataWebSocket webSocket,
+                              AeronGateway aeronGateway) {
+        this.stateManager = stateManager;
+        this.webSocket = webSocket;
+        this.aeronGateway = aeronGateway;
+    }
+
+    @Override
+    protected void channelRead0(ChannelHandlerContext ctx, FullHttpRequest req) throws Exception {
+        String uri = req.uri();
+
+        // Handle API endpoints
+        if (uri.startsWith("/api/")) {
+            handleApiRequest(ctx, req, uri);
+            return;
+        }
+
+        // dYdX-compatible public market endpoint. The /spot/ Nginx prefix is
+        // stripped before the request reaches this handler.
+        if (uri.startsWith("/v4/sparklines")) {
+            handleSparklines(ctx, req, uri);
+            return;
+        }
+
+        // Health check
+        if (uri.equals("/health") || uri.equals("/health/")) {
+            handleHealth(ctx, req);
+            return;
+        }
+
+        // Prometheus scrape (match#33)
+        if (uri.equals("/metrics")) {
+            handleMetrics(ctx);
+            return;
+        }
+
+        // Pass non-API requests to WebSocket handler
+        req.retain();
+        ctx.fireChannelRead(req);
+    }
+
+    private void handleApiRequest(ChannelHandlerContext ctx, FullHttpRequest req, String uri) {
+        if (!HttpMethod.GET.equals(req.method())) {
+            sendError(ctx, HttpResponseStatus.METHOD_NOT_ALLOWED, "Only GET method supported");
+            return;
+        }
+
+        if (uri.startsWith("/api/orderbook")) {
+            handleOrderBook(ctx, uri);
+        } else if (uri.startsWith("/api/candles")) {
+            handleCandles(ctx, uri);
+        } else if (uri.startsWith("/api/trades")) {
+            handleTrades(ctx, uri);
+        } else if (uri.startsWith("/api/tickers")
+                || uri.startsWith("/api/v1/market-tickers")
+                || uri.startsWith("/api/v1/market-stats")) {
+            sendJson(ctx, stateManager.getAllTickerStats());
+        } else if (uri.startsWith("/api/v4/sparklines")
+                || uri.startsWith("/api/v1/sparklines")) {
+            handleSparklines(ctx, req, uri);
+        } else {
+            sendError(ctx, HttpResponseStatus.NOT_FOUND, "Unknown endpoint: " + uri);
+        }
+    }
+
+    private void handleSparklines(ChannelHandlerContext ctx, FullHttpRequest req, String uri) {
+        if (!HttpMethod.GET.equals(req.method())) {
+            sendError(ctx, HttpResponseStatus.METHOD_NOT_ALLOWED, "Only GET method supported");
+            return;
+        }
+
+        String timePeriod = parseQueryString(uri, "timePeriod", "ONE_DAY");
+        stateManager.buildSparklinesJsonAsync(timePeriod)
+                .whenComplete((json, err) -> {
+                    if (err != null) {
+                        Throwable cause = err.getCause() != null ? err.getCause() : err;
+                        sendError(ctx, HttpResponseStatus.BAD_REQUEST, cause.getMessage());
+                    } else {
+                        sendJson(ctx, json);
+                    }
+                });
+    }
+
+    private void handleOrderBook(ChannelHandlerContext ctx, String uri) {
+        int marketId = parseQueryParam(uri, "marketId", 1); // Default to market 1 (BTC-USD)
+        var book = stateManager.getOrderBook(marketId);
+        if (book == null || !book.hasData()) {
+            // Empty book: shared builder (match#98) keeps this identical to the WS
+            // path's buildEmptyBookSnapshot, including bidVersion/askVersion/version = 0
+            // so a REST-bootstrapping client's chain-continuity check behaves the same
+            // as a WS-bootstrapped one.
+            String emptyJson = com.match.infrastructure.websocket.MarketDataWebSocket
+                .buildEmptyBookSnapshotJson(marketId);
+            sendJson(ctx, emptyJson);
+            return;
+        }
+        String json = book.toJson();
+        sendJson(ctx, json);
+    }
+
+    private void handleCandles(ChannelHandlerContext ctx, String uri) {
+        int marketId = parseQueryParam(uri, "marketId", 1);
+        String interval = parseQueryString(uri, "interval", "1m");
+        int limit = parseQueryParam(uri, "limit", 200);
+        limit = Math.min(limit, 500); // Cap kept from the ring-buffer era (API contract)
+
+        // DB-first with in-memory fallback; completes on a persistence read
+        // thread — Netty marshals writeAndFlush back to the event loop.
+        stateManager.buildCandleHistoryJsonAsync(marketId, interval, limit)
+                .whenComplete((json, err) -> {
+                    if (err != null) {
+                        sendError(ctx, HttpResponseStatus.INTERNAL_SERVER_ERROR, err.getMessage());
+                    } else {
+                        sendJson(ctx, json);
+                    }
+                });
+    }
+
+    private void handleTrades(ChannelHandlerContext ctx, String uri) {
+        int limit = parseQueryParam(uri, "limit", 50);
+        limit = Math.min(limit, 500); // Cap at max buffer size
+        // The tape is venue-wide by default (marketId 0), unlike /api/orderbook and
+        // /api/candles which default to market 1. Callers asking for one market used
+        // to get every market's trades back, silently.
+        int marketId = parseQueryParam(uri, "marketId", 0);
+
+        stateManager.recentTradesJsonAsync(limit, marketId)
+                .whenComplete((json, err) -> {
+                    if (err != null) {
+                        sendError(ctx, HttpResponseStatus.INTERNAL_SERVER_ERROR, err.getMessage());
+                    } else {
+                        sendJson(ctx, json);
+                    }
+                });
+    }
+
+    /** match#33: hand-rendered Prometheus text — reads only volatile/atomic counters. */
+    private void handleMetrics(ChannelHandlerContext ctx) {
+        StringBuilder sb = new StringBuilder(2048);
+        appendSeries(sb, "gateway_ws_clients", "gauge", "Connected market-data WebSocket clients",
+                webSocket != null && webSocket.getChannels() != null ? webSocket.getChannels().size() : 0);
+        appendSeries(sb, "gateway_ws_dropped_frames_total", "counter", "Frames conflated/dropped for slow WS clients",
+                com.match.infrastructure.websocket.MarketDataWebSocket.DROPPED_FRAMES.get());
+        appendSeries(sb, "gateway_ws_resyncs_total", "counter", "State resyncs sent after frame drops",
+                com.match.infrastructure.websocket.MarketDataWebSocket.RESYNCS_SENT.get());
+        appendSeries(sb, "gateway_ws_slow_disconnects_total", "counter", "Slow WS clients disconnected",
+                com.match.infrastructure.websocket.MarketDataWebSocket.SLOW_CLIENTS_DISCONNECTED.get());
+        appendSeries(sb, "gateway_stale_deltas_total", "counter", "Out-of-order book deltas dropped",
+                stateManager != null ? stateManager.getStaleDeltasDropped() : 0);
+        appendSeries(sb, "gateway_stale_snapshots_total", "counter", "Out-of-order book snapshots dropped",
+                stateManager != null ? stateManager.getStaleSnapshotsDropped() : 0);
+        appendSeries(sb, "gateway_chain_breaks_total", "counter", "Book-version chain breaks (delta dropped, book marked stale)",
+                stateManager != null ? stateManager.getChainBreaks() : 0);
+        appendSeries(sb, "gateway_deltas_dropped_stale_total", "counter", "Book deltas dropped because the local book was stale",
+                stateManager != null ? stateManager.getDeltasDroppedWhileStale() : 0);
+        appendSeries(sb, "gateway_books_stale", "gauge", "Markets whose local order book is currently stale (awaiting resnapshot)",
+                stateManager != null ? stateManager.getStaleBookCount() : 0);
+        if (aeronGateway != null) {
+            appendSeries(sb, "gateway_cluster_connected", "gauge", "Cluster egress session up (1) / down (0)",
+                    aeronGateway.isConnected() ? 1 : 0);
+            appendSeries(sb, "gateway_egress_messages_total", "counter", "Cluster egress messages relayed",
+                    aeronGateway.getEgressMessageCount());
+            appendSeries(sb, "gateway_egress_age_ms", "gauge", "Milliseconds since the last egress message",
+                    aeronGateway.getEgressAgeMs());
+            appendSeries(sb, "gateway_aeron_errors_total", "counter", "Aeron error handler invocations",
+                    aeronGateway.getAeronErrorCount());
+        }
+        var persistence = stateManager != null ? stateManager.getPersistence() : null;
+        if (persistence != null) {
+            var db = persistence.db();
+            appendSeries(sb, "market_pg_up", "gauge", "Market-data TimescaleDB reachable (1) / down (0)",
+                    db.isAvailable() ? 1 : 0);
+            appendSeries(sb, "market_pg_trades_written_total", "counter", "Trades persisted to TimescaleDB",
+                    db.tradesWritten.get());
+            appendSeries(sb, "market_pg_trades_dropped_total", "counter", "Trades dropped on a full write queue",
+                    db.tradesDropped.get());
+            appendSeries(sb, "market_pg_write_errors_total", "counter", "Trade batches dropped after statement failures",
+                    db.writeErrors.get());
+            appendSeries(sb, "market_pg_batch_flushes_total", "counter", "Trade batch inserts executed",
+                    db.batchFlushes.get());
+            appendSeries(sb, "market_pg_queue_depth", "gauge", "Trades waiting in the write queue",
+                    db.queueDepth());
+            appendSeries(sb, "market_pg_read_fallbacks_total", "counter", "History reads served from memory instead of the DB",
+                    db.readFallbacks.get());
+        }
+
+        byte[] body = sb.toString().getBytes(java.nio.charset.StandardCharsets.UTF_8);
+        FullHttpResponse response = new DefaultFullHttpResponse(
+                HttpVersion.HTTP_1_1, HttpResponseStatus.OK,
+                io.netty.buffer.Unpooled.wrappedBuffer(body));
+        response.headers().set(HttpHeaderNames.CONTENT_TYPE, "text/plain; version=0.0.4; charset=utf-8");
+        response.headers().set(HttpHeaderNames.CONTENT_LENGTH, body.length);
+        ctx.writeAndFlush(response).addListener(io.netty.channel.ChannelFutureListener.CLOSE);
+    }
+
+    private static void appendSeries(StringBuilder sb, String name, String type, String help, long value) {
+        sb.append("# HELP ").append(name).append(' ').append(help).append('\n');
+        sb.append("# TYPE ").append(name).append(' ').append(type).append('\n');
+        sb.append(name).append(' ').append(value).append('\n');
+    }
+
+    private void handleHealth(ChannelHandlerContext ctx, FullHttpRequest req) {
+        // Check if any market has order book data
+        boolean hasAnyOrderBook = false;
+        for (int marketId = 1; marketId <= 5; marketId++) {
+            var book = stateManager.getOrderBook(marketId);
+            if (book != null && book.hasData()) {
+                hasAnyOrderBook = true;
+                break;
+            }
+        }
+        String dataFields = "\"orderBook\":" + hasAnyOrderBook +
+                      ",\"trades\":" + stateManager.getTrades().hasData();
+
+        // D-1: 200 only while the Aeron bridge to the cluster is delivering, so probers
+        // (cloud-console probeHealth, future k8s) see a wedged gateway as DOWN. Signals
+        // are the ones already tracked for /metrics and the M6 stale-egress reconnect;
+        // the leader's ~1s keep-warm means a healthy link never idles near the threshold.
+        // No bridge wired (test-only constructor) = nothing to judge, legacy 200.
+        if (aeronGateway != null) {
+            boolean connected = aeronGateway.isConnected();
+            long egressAgeMs = aeronGateway.getEgressAgeMs();
+            String reason = !connected ? "cluster session not connected"
+                    : egressAgeMs > AeronGateway.STALE_EGRESS_TIMEOUT_MS
+                            ? "no egress from cluster for " + egressAgeMs + "ms" : null;
+            String clusterFields = ",\"clusterConnected\":" + connected + ",\"egressAgeMs\":" + egressAgeMs;
+            if (reason != null) {
+                sendJson(ctx, HttpResponseStatus.SERVICE_UNAVAILABLE,
+                        "{\"status\":\"unhealthy\",\"reason\":\"" + reason + "\"," + dataFields + clusterFields + "}");
+            } else {
+                sendJson(ctx, "{\"status\":\"ok\"," + dataFields + clusterFields + "}");
+            }
+            return;
+        }
+        sendJson(ctx, "{\"status\":\"ok\"," + dataFields + "}");
+    }
+
+    private String parseQueryString(String uri, String param, String defaultValue) {
+        int idx = uri.indexOf(param + "=");
+        if (idx < 0) {
+            return defaultValue;
+        }
+        int start = idx + param.length() + 1;
+        int end = uri.indexOf('&', start);
+        if (end < 0) {
+            end = uri.length();
+        }
+        return uri.substring(start, end);
+    }
+
+    private int parseQueryParam(String uri, String param, int defaultValue) {
+        int idx = uri.indexOf(param + "=");
+        if (idx < 0) {
+            return defaultValue;
+        }
+        int start = idx + param.length() + 1;
+        int end = uri.indexOf('&', start);
+        if (end < 0) {
+            end = uri.length();
+        }
+        try {
+            return Integer.parseInt(uri.substring(start, end));
+        } catch (NumberFormatException e) {
+            return defaultValue;
+        }
+    }
+
+    private void sendJson(ChannelHandlerContext ctx, String json) {
+        sendJson(ctx, HttpResponseStatus.OK, json);
+    }
+
+    private void sendJson(ChannelHandlerContext ctx, HttpResponseStatus status, String json) {
+        FullHttpResponse response = new DefaultFullHttpResponse(
+            HttpVersion.HTTP_1_1,
+            status,
+            Unpooled.copiedBuffer(json, CharsetUtil.UTF_8)
+        );
+        response.headers().set(HttpHeaderNames.CONTENT_TYPE, "application/json");
+        response.headers().set(HttpHeaderNames.CONTENT_LENGTH, response.content().readableBytes());
+        response.headers().set(HttpHeaderNames.ACCESS_CONTROL_ALLOW_ORIGIN, "*");
+        ctx.writeAndFlush(response).addListener(ChannelFutureListener.CLOSE);
+    }
+
+    private void sendError(ChannelHandlerContext ctx, HttpResponseStatus status, String message) {
+        String json = "{\"error\":\"" + message + "\"}";
+        FullHttpResponse response = new DefaultFullHttpResponse(
+            HttpVersion.HTTP_1_1,
+            status,
+            Unpooled.copiedBuffer(json, CharsetUtil.UTF_8)
+        );
+        response.headers().set(HttpHeaderNames.CONTENT_TYPE, "application/json");
+        response.headers().set(HttpHeaderNames.CONTENT_LENGTH, response.content().readableBytes());
+        response.headers().set(HttpHeaderNames.ACCESS_CONTROL_ALLOW_ORIGIN, "*");
+        ctx.writeAndFlush(response).addListener(ChannelFutureListener.CLOSE);
+    }
+
+    @Override
+    public void exceptionCaught(ChannelHandlerContext ctx, Throwable cause) {
+        sendError(ctx, HttpResponseStatus.INTERNAL_SERVER_ERROR, cause.getMessage());
+    }
+}

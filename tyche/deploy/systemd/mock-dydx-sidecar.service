@@ -1,0 +1,15 @@
+[Unit]
+Description=Mock dYdX sidecar for Tyche integration tests
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/ec2-user/flydex/dydx/tyche
+Environment=PATH=/usr/local/go/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+ExecStart=/usr/local/go/bin/go run ./cmd/mock-dydx-sidecar -listen 127.0.0.1:8090
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

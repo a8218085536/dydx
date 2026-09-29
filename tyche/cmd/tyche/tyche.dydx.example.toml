@@ -1,0 +1,432 @@
+[logger]
+Filename = "./logs/tyche-dydx.log"
+Level = "debug"
+Compress = false
+MaxSize = 10
+MaxAge = 7
+MaxBackups = 512
+Named = "[TYCHE-DYDX]"
+
+[redis]
+Domain = "flydex:tyche"
+MaxIdle = 8
+MaxActive = 0
+IdleTimeout = 0
+URI = "redis://127.0.0.1:6379/2"
+
+[tyche]
+chainType = "dydx"
+listen = "127.0.0.1:8081"
+readTimeout = 30
+writeTimeout = 120
+maxHeaderBytes = 1048576
+
+# Tyche does not hold a dYdX trading private key. User dYdX proxy wallet
+# keys live only in the dydxtrading sidecar keystore.
+account = ""
+privateKey = ""
+
+# Native dYdX/Cosmos trading adapter. Tyche builds params.cosmosTx for
+# short-term CLOB place/cancel messages and posts it here for per-user proxy
+# wallet signing and broadcasting.
+dydxTradingURL = "http://127.0.0.1:8090/dydx/trading"
+dydxWalletCreateURL = "http://127.0.0.1:8090/wallet/create"
+dydxSubaccountDepositURL = "http://127.0.0.1:8090/subaccount/deposit"
+
+# Current single-node FlyDEX dYdX chain id.
+dydxChainID = "flydex-mainnet-1"
+
+# Tyche reads the chain status from this URL to compute long-term goodTilBlockTime.
+dydxHeightURL = "http://127.0.0.1:26657/status"
+dydxSubaccountNumber = 0
+dydxCollateralAssetId = 0
+dydxCollateralQuantumsPerUsd = "1000000"
+dydxMinStatefulOrderMarginUsd = "20"
+dydxRetainedCollateralUsd = "1"
+closeSettlementMode = "margin_only"
+closeSettlementAsset = "FDEX"
+closeSettlementAssetDecimals = 18
+tradeCloseCallbackURL = ""
+dydxGoodTilSeconds = 604800
+
+# Fill this market mapping from the official chain genesis/config:
+# market is your public trading pair name, clobPairId is the native dYdX CLOB
+# pair id, and the two scale factors convert user decimals into native uint64
+# quantums/subticks.
+
+# Read-only dYdX trading event source used by Tyche sync workers. Keep this as
+# a placeholder until the official indexer/sidecar event endpoint is available.
+# The sidecar serves /fills, /order-statuses and /positions in Tyche's
+# expected JSON shape. Use the same strong secret as internalAPIKey locally,
+# or a separately rotated key in production.
+# On the sidecar you can use either:
+# 1. DYDX_EVENT_UPSTREAM_URL for an already-normalized source that directly
+#    serves /fills, /order-statuses and /positions.
+# 2. DYDX_RAW_INDEXER_EVENT_SOURCE_URL for a raw protocol/indexer event feed.
+#    In that mode the sidecar translates order_fill, stateful_order and
+#    subaccount_update events, then calls this Tyche service with
+#    TYCHE_URL + TYCHE_INTERNAL_API_KEY to resolve dYdX address -> userId.
+dydxEventSourceURL = "http://127.0.0.1:8090"
+dydxEventSourceAPIKey = "replace-with-strong-internal-key-at-least-32-chars"
+
+# dYdX proxy wallet creation is handled by dydxtrading. NECO signature login is
+# verified by Tyche, so no dYdX wallet signature verifier is required here.
+dydxSignatureVerifyURL = ""
+
+# NECO RPC is required when the NECO price oracle is enabled.
+necoRpcURL = ""
+
+# Required for protected internal endpoints when deployed.
+# Tyche also sends this value as the bearer token to the dYdX trading sidecar.
+internalAPIKey = "replace-with-strong-internal-key-at-least-32-chars"
+
+errorURI = ""
+succeedURI = ""
+failedURI = ""
+
+errorNumberOfConcurrent = 4
+failedNumberOfConcurrent= 4
+pendingNumberOfConcurrent = 16
+sentNumberOfConcurrent = 8
+succeedNumberOfConcurrent= 4
+
+nonceCheckInterval = 3
+nonceKeepalive = 60
+maxBumpingGasTimes = 10
+pendingRetryInterval = 1
+sentRetryInterval = 1
+redisRetryInterval = 3
+networkRetryInterval = 5
+waitMinedRetryInterval = 10
+callbackRetryInterval = 15
+
+expectedMD5Password = "replace-with-admin-password-md5"
+allowedIP = "127.0.0.1"
+
+[[tyche.dydxMarkets]]
+market = "BTC-USD"
+clobPairId = 0
+quantumsPerUnit = "10000000000"
+stepBaseQuantums = "1000000"
+subticksPerUnit = "100000"
+subticksPerTick = "100000"
+
+[[tyche.dydxMarkets]]
+market = "ETH-USD"
+clobPairId = 1
+quantumsPerUnit = "1000000000"
+stepBaseQuantums = "1000000"
+subticksPerUnit = "1000000"
+subticksPerTick = "100000"
+
+[[tyche.dydxMarkets]]
+market = "LINK-USD"
+clobPairId = 2
+quantumsPerUnit = "1000000"
+stepBaseQuantums = "1000000"
+subticksPerUnit = "1000000000"
+subticksPerTick = "1000000"
+
+[[tyche.dydxMarkets]]
+market = "POL-USD"
+clobPairId = 3
+quantumsPerUnit = "100000"
+stepBaseQuantums = "1000000"
+subticksPerUnit = "10000000000"
+subticksPerTick = "1000000"
+
+[[tyche.dydxMarkets]]
+market = "CRV-USD"
+clobPairId = 4
+quantumsPerUnit = "100000"
+stepBaseQuantums = "1000000"
+subticksPerUnit = "10000000000"
+subticksPerTick = "1000000"
+
+[[tyche.dydxMarkets]]
+market = "SOL-USD"
+clobPairId = 5
+quantumsPerUnit = "10000000"
+stepBaseQuantums = "1000000"
+subticksPerUnit = "100000000"
+subticksPerTick = "1000000"
+
+[[tyche.dydxMarkets]]
+market = "ADA-USD"
+clobPairId = 6
+quantumsPerUnit = "100000"
+stepBaseQuantums = "1000000"
+subticksPerUnit = "10000000000"
+subticksPerTick = "1000000"
+
+[[tyche.dydxMarkets]]
+market = "AVAX-USD"
+clobPairId = 7
+quantumsPerUnit = "10000000"
+stepBaseQuantums = "1000000"
+subticksPerUnit = "100000000"
+subticksPerTick = "1000000"
+
+[[tyche.dydxMarkets]]
+market = "FIL-USD"
+clobPairId = 8
+quantumsPerUnit = "1000000"
+stepBaseQuantums = "1000000"
+subticksPerUnit = "1000000000"
+subticksPerTick = "1000000"
+
+[[tyche.dydxMarkets]]
+market = "LTC-USD"
+clobPairId = 9
+quantumsPerUnit = "10000000"
+stepBaseQuantums = "1000000"
+subticksPerUnit = "100000000"
+subticksPerTick = "1000000"
+
+[[tyche.dydxMarkets]]
+market = "DOGE-USD"
+clobPairId = 10
+quantumsPerUnit = "10000"
+stepBaseQuantums = "1000000"
+subticksPerUnit = "100000000000"
+subticksPerTick = "1000000"
+
+[[tyche.dydxMarkets]]
+market = "ATOM-USD"
+clobPairId = 11
+quantumsPerUnit = "1000000"
+stepBaseQuantums = "1000000"
+subticksPerUnit = "1000000000"
+subticksPerTick = "1000000"
+
+[[tyche.dydxMarkets]]
+market = "DOT-USD"
+clobPairId = 12
+quantumsPerUnit = "1000000"
+stepBaseQuantums = "1000000"
+subticksPerUnit = "1000000000"
+subticksPerTick = "1000000"
+
+[[tyche.dydxMarkets]]
+market = "UNI-USD"
+clobPairId = 13
+quantumsPerUnit = "1000000"
+stepBaseQuantums = "1000000"
+subticksPerUnit = "1000000000"
+subticksPerTick = "1000000"
+
+[[tyche.dydxMarkets]]
+market = "BCH-USD"
+clobPairId = 14
+quantumsPerUnit = "100000000"
+stepBaseQuantums = "1000000"
+subticksPerUnit = "10000000"
+subticksPerTick = "1000000"
+
+[[tyche.dydxMarkets]]
+market = "TRX-USD"
+clobPairId = 15
+quantumsPerUnit = "10000"
+stepBaseQuantums = "1000000"
+subticksPerUnit = "100000000000"
+subticksPerTick = "1000000"
+
+[[tyche.dydxMarkets]]
+market = "NEAR-USD"
+clobPairId = 16
+quantumsPerUnit = "1000000"
+stepBaseQuantums = "1000000"
+subticksPerUnit = "1000000000"
+subticksPerTick = "1000000"
+
+[[tyche.dydxMarkets]]
+market = "MKR-USD"
+clobPairId = 17
+quantumsPerUnit = "1000000000"
+stepBaseQuantums = "1000000"
+subticksPerUnit = "1000000"
+subticksPerTick = "1000000"
+
+[[tyche.dydxMarkets]]
+market = "XLM-USD"
+clobPairId = 18
+quantumsPerUnit = "100000"
+stepBaseQuantums = "1000000"
+subticksPerUnit = "10000000000"
+subticksPerTick = "1000000"
+
+[[tyche.dydxMarkets]]
+market = "ETC-USD"
+clobPairId = 19
+quantumsPerUnit = "10000000"
+stepBaseQuantums = "1000000"
+subticksPerUnit = "100000000"
+subticksPerTick = "1000000"
+
+[[tyche.dydxMarkets]]
+market = "COMP-USD"
+clobPairId = 20
+quantumsPerUnit = "10000000"
+stepBaseQuantums = "1000000"
+subticksPerUnit = "100000000"
+subticksPerTick = "1000000"
+
+[[tyche.dydxMarkets]]
+market = "WLD-USD"
+clobPairId = 21
+quantumsPerUnit = "1000000"
+stepBaseQuantums = "1000000"
+subticksPerUnit = "1000000000"
+subticksPerTick = "1000000"
+
+[[tyche.dydxMarkets]]
+market = "APE-USD"
+clobPairId = 22
+quantumsPerUnit = "1000000"
+stepBaseQuantums = "1000000"
+subticksPerUnit = "1000000000"
+subticksPerTick = "1000000"
+
+[[tyche.dydxMarkets]]
+market = "APT-USD"
+clobPairId = 23
+quantumsPerUnit = "1000000"
+stepBaseQuantums = "1000000"
+subticksPerUnit = "1000000000"
+subticksPerTick = "1000000"
+
+[[tyche.dydxMarkets]]
+market = "ARB-USD"
+clobPairId = 24
+quantumsPerUnit = "1000000"
+stepBaseQuantums = "1000000"
+subticksPerUnit = "1000000000"
+subticksPerTick = "1000000"
+
+[[tyche.dydxMarkets]]
+market = "BLUR-USD"
+clobPairId = 25
+quantumsPerUnit = "100000"
+stepBaseQuantums = "1000000"
+subticksPerUnit = "10000000000"
+subticksPerTick = "1000000"
+
+[[tyche.dydxMarkets]]
+market = "LDO-USD"
+clobPairId = 26
+quantumsPerUnit = "1000000"
+stepBaseQuantums = "1000000"
+subticksPerUnit = "1000000000"
+subticksPerTick = "1000000"
+
+[[tyche.dydxMarkets]]
+market = "OP-USD"
+clobPairId = 27
+quantumsPerUnit = "1000000"
+stepBaseQuantums = "1000000"
+subticksPerUnit = "1000000000"
+subticksPerTick = "1000000"
+
+[[tyche.dydxMarkets]]
+market = "PEPE-USD"
+clobPairId = 28
+quantumsPerUnit = "0.1"
+stepBaseQuantums = "1000000"
+subticksPerUnit = "10000000000000000"
+subticksPerTick = "1000000"
+
+[[tyche.dydxMarkets]]
+market = "SEI-USD"
+clobPairId = 29
+quantumsPerUnit = "100000"
+stepBaseQuantums = "1000000"
+subticksPerUnit = "10000000000"
+subticksPerTick = "1000000"
+
+[[tyche.dydxMarkets]]
+market = "SHIB-USD"
+clobPairId = 30
+quantumsPerUnit = "1"
+stepBaseQuantums = "1000000"
+subticksPerUnit = "1000000000000000"
+subticksPerTick = "1000000"
+
+[[tyche.dydxMarkets]]
+market = "SUI-USD"
+clobPairId = 31
+quantumsPerUnit = "100000"
+stepBaseQuantums = "1000000"
+subticksPerUnit = "10000000000"
+subticksPerTick = "1000000"
+
+[[tyche.dydxMarkets]]
+market = "XRP-USD"
+clobPairId = 32
+quantumsPerUnit = "100000"
+stepBaseQuantums = "1000000"
+subticksPerUnit = "10000000000"
+subticksPerTick = "1000000"
+
+[[tyche.assetMappings]]
+necoTokenAddress = ""
+necoAsset = "FDEX"
+dydxAsset = "USD"
+decimals = 18
+minUnit = "1"
+priceRoute = "FDEX-USDT"
+enabledForTrading = false
+
+[[tyche.assetMappings]]
+necoTokenAddress = ""
+necoAsset = "USDT"
+dydxAsset = "USD"
+decimals = 18
+minUnit = "1"
+priceRoute = "USDT-USD"
+enabledForTrading = false
+
+[[tyche.priceRoutes]]
+name = "FDEX-USDT"
+asset = "FDEX"
+usdAsset = "USD"
+
+[[tyche.priceRoutes.hops]]
+pair = ""
+fromToken = ""
+toToken = ""
+fromDecimals = 18
+toDecimals = 18
+
+[[tyche.priceRoutes]]
+name = "USDT-USD"
+asset = "USDT"
+usdAsset = "USD"
+
+[tyche.necoDeposit]
+# Hidden trading preparation transfers user FDEX/USDT here before dYdX order submit.
+# Keep empty until the real NECO custody/deposit address is available.
+depositAddress = ""
+startBlock = 0
+minConfirmations = 12
+maxBlockRange = 512
+
+[tyche.necoPriceOracle]
+enabled = false
+mode = "v2_pair"
+
+# Legacy fields are unused when [[tyche.priceRoutes]] is configured.
+dedxNecoPair = ""
+necoUsdPair = ""
+
+dedxToken = ""
+necoToken = ""
+usdToken = ""
+
+dedxDecimals = 18
+necoDecimals = 18
+usdDecimals = 6
+
+# Tyche refuses to quote from shallow pools.
+minLiquidityUsd = "10000"
+maxPriceDeviationBps = 500
+maxPriceAgeSeconds = 60
