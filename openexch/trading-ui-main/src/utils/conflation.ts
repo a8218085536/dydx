@@ -36,8 +36,8 @@ import type {
  * - TRADES_BATCH (per market): merged in place (concat + cap; the UI renders
  *   the newest 50).
  * - Everything else (CLUSTER_EVENT, ERROR, ...): passed through in arrival
- *   order. (User order events no longer cross this socket — they come from
- *   the user-scoped OMS /ws/v1 stream, see useOmsSocket.)
+ *   order. The unified hook routes private order/execution events before they
+ *   reach this public market-data buffer.
  */
 
 const MAX_PENDING_BOOK_DELTAS = 3000;

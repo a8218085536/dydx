@@ -8,7 +8,7 @@ import { useMarketStats } from './hooks/useMarketStats';
 import { useClusterState } from './hooks/useClusterState';
 import { useApi } from './hooks/useApi';
 import { useOrders } from './hooks/useOrders';
-import { useOmsSocket } from './hooks/useOmsSocket';
+import { publishExecutionEvent } from './hooks/useExecutions';
 import { useTheme } from './hooks/useTheme';
 import { useAuth } from './auth/AuthContext';
 import { STACK_VERSION } from './config';
@@ -25,9 +25,9 @@ import { OrderHistory } from './components/OrderHistory/OrderHistory';
 import { AccountDrawer } from './components/Account/AccountDrawer';
 import { ThemeToggle } from './components/ThemeToggle/ThemeToggle';
 import { LogoMark } from './components/LogoMark';
-import type { WebSocketMessage, Market, OrderRequest, UserOrder, OmsOrderEvent, ClusterStatusMessage, ClusterEventMessage, ExtendedConnectionStatus, BookDeltaMessage, TickerStatsMessage, CandleData, CandleHistoryMessage, CandleUpdateMessage } from './types/market';
+import type { WebSocketMessage, Market, OrderRequest, UserOrder, OmsOrderEvent, OmsExecutionEvent, ClusterStatusMessage, ClusterEventMessage, ExtendedConnectionStatus, BookDeltaMessage, TickerStatsMessage, CandleData, CandleHistoryMessage, CandleUpdateMessage } from './types/market';
 import { MARKETS } from './types/market';
-import { mergeLiveCandle } from './utils/candles';
+import { mergeLiveCandle, shouldAcceptCandleHistory, shouldApplyCandleUpdate } from './utils/candles';
 import { formatRejectReason } from './utils/rejectReasons';
 import { EV, track, updateContext } from './analytics';
 
@@ -76,7 +76,8 @@ function MarketPage() {
   // until the new market's CANDLE_HISTORY baseline lands (no cross-market
   // appends).
   const [chartLoading, setChartLoading] = useState(false);
-  const candlesMarketRef = useRef(selectedMarket.id);
+  const candlesMarketRef = useRef<number | null>(null);
+  const candlesIntervalRef = useRef<string | null>(null);
 
   // The book requests a fresh snapshot itself when it detects a version gap
   // (v4 chain); the ref indirection breaks the hook-order cycle with
@@ -121,7 +122,13 @@ function MarketPage() {
     resetAllState();
   }, [resetAllState]);
 
-  const handleReconnected = useCallback(() => {}, []);
+  const sessionToken = session?.token ?? null;
+  const handleReconnected = useCallback(() => {
+    if (sessionToken) seedOpenOrders();
+  }, [sessionToken, seedOpenOrders]);
+  const handleExecutionEvent = useCallback((event: OmsExecutionEvent) => {
+    publishExecutionEvent(event);
+  }, []);
 
   const handleMessage = useCallback(
     (message: WebSocketMessage) => {
@@ -171,16 +178,16 @@ function MarketPage() {
           break;
         case 'CANDLE_HISTORY': {
           const candleHist = message as CandleHistoryMessage;
-          if (candleHist.marketId === selectedMarketIdRef.current) {
-            // Only use 1m history from WS; for other intervals we fetch via REST
-            if (chartIntervalRef.current === '1m' || candleHist.interval === chartIntervalRef.current) {
-              setCandles(candleHist.candles);
-              setCurrentCandle(null);
-              // The selected market's baseline has landed: live updates may
-              // apply again and the chart's loading dim lifts.
-              candlesMarketRef.current = candleHist.marketId;
-              setChartLoading(false);
-            }
+          if (shouldAcceptCandleHistory(
+              candleHist.marketId,
+              candleHist.interval,
+              selectedMarketIdRef.current,
+              chartIntervalRef.current)) {
+            setCandles(candleHist.candles);
+            setCurrentCandle(null);
+            candlesMarketRef.current = candleHist.marketId;
+            candlesIntervalRef.current = candleHist.interval;
+            setChartLoading(false);
           }
           break;
         }
@@ -188,17 +195,19 @@ function MarketPage() {
           const candleUpd = message as CandleUpdateMessage;
           // Second guard: after a market switch, drop updates until the new
           // market's history baseline has replaced the candles array.
-          if (candleUpd.marketId === selectedMarketIdRef.current &&
-              candlesMarketRef.current === selectedMarketIdRef.current &&
-              candleUpd.interval === '1m') {
-            if (chartIntervalRef.current === '1m') {
-              // Update current candle for real-time chart updates
-              setCurrentCandle(candleUpd.candle);
-              // Keep the history array authoritative for the live bucket (append on
-              // a new bucket, update-in-place on the same one) so a settled candle
-              // holds its FINAL value, not its first-tick value. See mergeLiveCandle.
-              setCandles(prev => mergeLiveCandle(prev, candleUpd.candle, MAX_LIVE_CANDLES));
-            }
+          if (shouldApplyCandleUpdate(
+              candleUpd.marketId,
+              selectedMarketIdRef.current,
+              candlesMarketRef.current,
+              candlesIntervalRef.current,
+              candleUpd.interval,
+              chartIntervalRef.current)) {
+            // Update current candle for real-time chart updates.
+            setCurrentCandle(candleUpd.candle);
+            // Keep the history array authoritative for the live bucket (append on
+            // a new bucket, update-in-place on the same one) so a settled candle
+            // holds its FINAL value, not its first-tick value. See mergeLiveCandle.
+            setCandles(prev => mergeLiveCandle(prev, candleUpd.candle, MAX_LIVE_CANDLES));
           }
           break;
         }
@@ -216,20 +225,15 @@ function MarketPage() {
 
   const { status, forceReconnect, requestRefresh } = useWebSocket({
     marketId: selectedMarket.id,
+    interval: chartInterval,
+    token: sessionToken,
     onMessage: handleMessage,
+    onOrderEvent: handleOrderEvent,
+    onExecutionEvent: handleExecutionEvent,
     onReconnecting: handleReconnecting,
     onReconnected: handleReconnected,
   });
   requestRefreshRef.current = requestRefresh;
-
-  // User-scoped OMS socket (oms#72): connects only while signed in; each
-  // (re)connect re-seeds open orders from REST (the WS stream then wins).
-  const sessionToken = session?.token ?? null;
-  useOmsSocket({
-    token: sessionToken,
-    onOrderEvent: handleOrderEvent,
-    onConnected: seedOpenOrders,
-  });
 
   // Session change: drop the previous principal's orders; seed the new one's
   // immediately (the socket's onConnected covers later reconnects).
@@ -252,7 +256,7 @@ function MarketPage() {
     return () => window.clearTimeout(t);
   }, [status, bidDepth, askDepth, requestRefresh]);
 
-  // Fetch candles from REST API for non-1m intervals
+  // Fetch the selected interval's history baseline; WS keeps it current.
   const fetchCandles = useCallback(async (marketId: number, interval: string, limit: number = 200) => {
     setChartLoading(true);
     try {
@@ -262,16 +266,23 @@ function MarketPage() {
       const res = await fetch(`${apiBase}/api/candles?marketId=${marketId}&interval=${interval}&limit=${limit}`);
       if (res.ok) {
         const data = await res.json();
-        if (data.candles && data.marketId === selectedMarketIdRef.current) {
+        if (data.candles && shouldAcceptCandleHistory(
+            data.marketId,
+            data.interval,
+            selectedMarketIdRef.current,
+            chartIntervalRef.current)) {
           setCandles(data.candles);
           setCurrentCandle(null);
           candlesMarketRef.current = data.marketId;
+          candlesIntervalRef.current = data.interval;
         }
       }
     } catch (e) {
       console.error('Failed to fetch candles:', e);
     } finally {
-      setChartLoading(false);
+      if (marketId === selectedMarketIdRef.current && interval === chartIntervalRef.current) {
+        setChartLoading(false);
+      }
     }
   }, []);
 
@@ -279,16 +290,12 @@ function MarketPage() {
     track(EV.chart_interval_change, { to: interval });
     chartIntervalRef.current = interval;
     setChartInterval(interval);
+    candlesMarketRef.current = null;
+    candlesIntervalRef.current = null;
     setCandles([]);
     setCurrentCandle(null);
 
-    if (interval === '1m') {
-      // Re-fetch 1m from REST (WS will keep updating via CANDLE_UPDATE)
-      fetchCandles(selectedMarketIdRef.current, '1m');
-    } else {
-      // Fetch from REST for non-1m intervals
-      fetchCandles(selectedMarketIdRef.current, interval);
-    }
+    fetchCandles(selectedMarketIdRef.current, interval);
   }, [fetchCandles]);
 
   const effectiveStatus: ExtendedConnectionStatus = useMemo(() => {
@@ -306,6 +313,8 @@ function MarketPage() {
     setSelectedMarket(market);
     chartIntervalRef.current = '1m';
     setChartInterval('1m');
+    candlesMarketRef.current = null;
+    candlesIntervalRef.current = null;
     // Dim (don't blank) the chart until the new market's history lands
     setChartLoading(true);
     resetAllState();

@@ -112,7 +112,7 @@ describe('App smoke', () => {
     localStorage.setItem('oe.session', JSON.stringify({ token: 'smoketoken1', userId: 1, username: 'dev' }));
   });
 
-  it('mounts the trading page and opens market-data + OMS sockets', async () => {
+  it('mounts the trading page and opens one authenticated unified socket', async () => {
     render(
       <MemoryRouter>
         <AuthProvider>
@@ -131,13 +131,11 @@ describe('App smoke', () => {
     expect(screen.getByRole('button', { name: /^history$/i })).toBeTruthy();
     expect(screen.queryByRole('button', { name: /^order$/i })).toBeNull();
     expect(screen.queryByRole('button', { name: /^account$/i })).toBeNull();
-    // Market-data WS was opened, plus the user-scoped OMS socket (oms#72)
-    const urls = MockWebSocket.instances.map((ws) => ws.url);
-    expect(urls.some((u) => u.endsWith('/ws'))).toBe(true);
-    const oms = MockWebSocket.instances.find((ws) => ws.url.endsWith('/ws/v1'));
-    expect(oms, 'expected an OMS /ws/v1 socket').toBeTruthy();
+    expect(MockWebSocket.instances).toHaveLength(1);
+    const oms = MockWebSocket.instances[0];
+    expect(oms.url.endsWith('/ws/v1')).toBe(true);
     // Auth rides the subprotocol: ['bearer', <token>]
-    expect(oms!.protocols).toEqual(['bearer', 'smoketoken1']);
+    expect(oms.protocols).toEqual(['bearer', 'smoketoken1']);
   });
 
   it('opens the account drawer from the header username pill', async () => {

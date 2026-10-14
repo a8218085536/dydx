@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { mergeLiveCandle } from './candles';
+import { mergeLiveCandle, shouldAcceptCandleHistory, shouldApplyCandleUpdate } from './candles';
 import type { CandleData } from '../types/market';
 
 const c = (time: number, close: number, extra: Partial<CandleData> = {}): CandleData => ({
@@ -52,5 +52,25 @@ describe('mergeLiveCandle', () => {
     for (let t = 1; t <= 5; t++) hist = mergeLiveCandle(hist, c(t * 60, t), 3);
     expect(hist).toHaveLength(3);
     expect(hist.map(x => x.close)).toEqual([3, 4, 5]);
+  });
+});
+
+describe('shouldApplyCandleUpdate', () => {
+  it('accepts the selected non-1m interval for the active market', () => {
+    expect(shouldApplyCandleUpdate(1, 1, 1, '5m', '5m', '5m')).toBe(true);
+  });
+
+  it('rejects updates for another interval or market baseline', () => {
+    expect(shouldApplyCandleUpdate(1, 1, 1, '5m', '1m', '5m')).toBe(false);
+    expect(shouldApplyCandleUpdate(2, 1, 1, '5m', '5m', '5m')).toBe(false);
+    expect(shouldApplyCandleUpdate(1, 1, 2, '5m', '5m', '5m')).toBe(false);
+    expect(shouldApplyCandleUpdate(1, 1, 1, null, '5m', '5m')).toBe(false);
+  });
+});
+
+describe('shouldAcceptCandleHistory', () => {
+  it('rejects a delayed response for an interval that is no longer selected', () => {
+    expect(shouldAcceptCandleHistory(1, '5m', 1, '15m')).toBe(false);
+    expect(shouldAcceptCandleHistory(1, '15m', 1, '15m')).toBe(true);
   });
 });

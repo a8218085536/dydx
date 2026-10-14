@@ -38,3 +38,27 @@ export function mergeLiveCandle(
 
   return prev;
 }
+
+export function shouldApplyCandleUpdate(
+  updateMarketId: number,
+  selectedMarketId: number,
+  candlesMarketId: number | null,
+  candlesInterval: string | null,
+  updateInterval: string,
+  selectedInterval: string,
+): boolean {
+  return updateMarketId === selectedMarketId
+    && candlesMarketId === selectedMarketId
+    && candlesInterval === selectedInterval
+    && updateInterval === selectedInterval;
+}
+
+export function shouldAcceptCandleHistory(
+  responseMarketId: number,
+  responseInterval: string,
+  selectedMarketId: number,
+  selectedInterval: string,
+): boolean {
+  return responseMarketId === selectedMarketId
+    && responseInterval === selectedInterval;
+}

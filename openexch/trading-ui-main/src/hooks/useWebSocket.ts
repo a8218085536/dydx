@@ -1,59 +1,92 @@
 // SPDX-License-Identifier: Apache-2.0
-import { useEffect, useRef, useState, useCallback } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { EV, track } from '../analytics';
-import type { ConnectionStatus, WebSocketMessage } from '../types/market';
+import type {
+  ConnectionStatus,
+  OmsExecutionEvent,
+  OmsOrderEvent,
+  WebSocketMessage,
+} from '../types/market';
 import { MessageConflator } from '../utils/conflation';
 
 interface UseWebSocketOptions {
   marketId: number;
+  interval: string;
+  token: string | null;
   onMessage: (message: WebSocketMessage) => void;
-  onReconnecting?: () => void;  // Called when starting reconnect - use to reset state
-  onReconnected?: () => void;   // Called after successful reconnect
+  onOrderEvent?: (event: OmsOrderEvent) => void;
+  onExecutionEvent?: (event: OmsExecutionEvent) => void;
+  onReconnecting?: () => void;
+  onReconnected?: () => void;
 }
 
 const MAX_RECONNECT_ATTEMPTS = 10;
 const INITIAL_RECONNECT_DELAY = 1000;
 const MAX_RECONNECT_DELAY = 30000;
 const PING_INTERVAL = 30000;
-// Fallback flush cadence for when requestAnimationFrame is suspended
-// (hidden tab). Browsers clamp background timers to >=1s, which still bounds
-// the buffer to about a second of (conflated) messages.
 const HIDDEN_FLUSH_INTERVAL = 250;
 
-// Message counter for diagnostics
 let messageCount = 0;
 let lastMessageLogTime = 0;
 
-export function useWebSocket({ marketId, onMessage, onReconnecting, onReconnected }: UseWebSocketOptions) {
+export function wsAuthProtocols(token: string | null): string[] | undefined {
+  return token && /^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/.test(token)
+    ? ['bearer', token]
+    : undefined;
+}
+
+function getWebSocketUrl(): string {
+  const protocol = window.location.protocol === 'https:' ? 'wss' : 'ws';
+  return `${protocol}://${window.location.host}/ws/v1`;
+}
+
+export function useWebSocket({
+  marketId,
+  interval,
+  token,
+  onMessage,
+  onOrderEvent,
+  onExecutionEvent,
+  onReconnecting,
+  onReconnected,
+}: UseWebSocketOptions) {
   const [status, setStatus] = useState<ConnectionStatus>('disconnected');
   const wsRef = useRef<WebSocket | null>(null);
   const reconnectAttemptRef = useRef(0);
   const reconnectTimeoutRef = useRef<number | null>(null);
   const pingIntervalRef = useRef<number | null>(null);
-  const isReconnectRef = useRef(false);  // Track if this is a reconnection
+  const shouldReconnectRef = useRef(true);
+  const isReconnectRef = useRef(false);
+  const marketIdRef = useRef(marketId);
+  const intervalRef = useRef(interval);
+  const tokenRef = useRef(token);
 
-  // Use ref for onMessage to avoid reconnecting when handler changes
   const onMessageRef = useRef(onMessage);
-  onMessageRef.current = onMessage;
-
-  // Use refs for reconnection callbacks
+  const onOrderEventRef = useRef(onOrderEvent);
+  const onExecutionEventRef = useRef(onExecutionEvent);
   const onReconnectingRef = useRef(onReconnecting);
   const onReconnectedRef = useRef(onReconnected);
+  onMessageRef.current = onMessage;
+  onOrderEventRef.current = onOrderEvent;
+  onExecutionEventRef.current = onExecutionEvent;
   onReconnectingRef.current = onReconnecting;
   onReconnectedRef.current = onReconnected;
 
-  // Use ref for marketId to send subscribe without reconnecting
-  const marketIdRef = useRef(marketId);
-
-  // Conflation buffer (trading-ui#24): messages accumulate here and are
-  // dispatched once per animation frame so all setStates batch into one
-  // render. See utils/conflation.ts for the per-type collapse rules.
   const conflatorRef = useRef<MessageConflator | null>(null);
-  if (conflatorRef.current === null) {
-    conflatorRef.current = new MessageConflator();
-  }
+  if (conflatorRef.current === null) conflatorRef.current = new MessageConflator();
   const flushRafRef = useRef<number | null>(null);
   const flushTimerRef = useRef<number | null>(null);
+
+  const clearTimers = useCallback(() => {
+    if (reconnectTimeoutRef.current !== null) {
+      clearTimeout(reconnectTimeoutRef.current);
+      reconnectTimeoutRef.current = null;
+    }
+    if (pingIntervalRef.current !== null) {
+      clearInterval(pingIntervalRef.current);
+      pingIntervalRef.current = null;
+    }
+  }, []);
 
   const cancelFlush = useCallback(() => {
     if (flushRafRef.current !== null) {
@@ -66,255 +99,176 @@ export function useWebSocket({ marketId, onMessage, onReconnecting, onReconnecte
     }
   }, []);
 
+  const subscription = useCallback(() => ({
+    op: 'subscribe',
+    channels: tokenRef.current
+      ? ['orderbook', 'trades', 'candles', 'orders', 'executions']
+      : ['orderbook', 'trades', 'candles'],
+    marketId: marketIdRef.current,
+    interval: intervalRef.current,
+  }), []);
+
+  const sendSubscription = useCallback((ws: WebSocket | null = wsRef.current) => {
+    if (ws?.readyState === WebSocket.OPEN) ws.send(JSON.stringify(subscription()));
+  }, [subscription]);
+
   const flushMessages = useCallback(() => {
     cancelFlush();
     const { messages, refreshMarketIds } = conflatorRef.current!.drain();
-    for (const message of messages) {
-      onMessageRef.current(message);
-    }
-    // A market's book backlog overflowed and was dropped: skip to current
-    // state by requesting a fresh snapshot instead of replaying history.
-    for (const refreshMarketId of refreshMarketIds) {
-      console.warn('[WS] Book backlog dropped for market', refreshMarketId, '- requesting refresh');
-      if (wsRef.current?.readyState === WebSocket.OPEN) {
-        wsRef.current.send(JSON.stringify({ action: 'refresh', marketId: refreshMarketId }));
-      }
-    }
-  }, [cancelFlush]);
+    messages.forEach(message => onMessageRef.current(message));
+    if (refreshMarketIds.length > 0) sendSubscription();
+  }, [cancelFlush, sendSubscription]);
 
   const scheduleFlush = useCallback(() => {
-    if (flushRafRef.current !== null || flushTimerRef.current !== null) {
-      return; // a flush is already scheduled
-    }
+    if (flushRafRef.current !== null || flushTimerRef.current !== null) return;
     flushRafRef.current = requestAnimationFrame(() => {
       flushRafRef.current = null;
       flushMessages();
     });
-    // rAF does not fire in hidden tabs; the timer keeps the buffer bounded
-    // there. Whichever fires first flushes and cancels the other.
     flushTimerRef.current = window.setTimeout(() => {
       flushTimerRef.current = null;
       flushMessages();
     }, HIDDEN_FLUSH_INTERVAL);
   }, [flushMessages]);
 
-  const getWebSocketUrl = useCallback(() => {
-    // Use environment variable if set (for cloudflared deployment)
-    if (import.meta.env.VITE_MARKET_WS_URL) {
-      return `${import.meta.env.VITE_MARKET_WS_URL}/ws`;
+  const disconnectSocket = useCallback(() => {
+    clearTimers();
+    cancelFlush();
+    conflatorRef.current!.clear();
+    const ws = wsRef.current;
+    wsRef.current = null;
+    if (ws) {
+      ws.onclose = null;
+      ws.close();
     }
-    // Fallback to localhost for development
-    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const host = window.location.hostname;
-    return `${protocol}//${host}:8081/ws`;
-  }, []);
-
-  const clearTimers = useCallback(() => {
-    if (reconnectTimeoutRef.current) {
-      clearTimeout(reconnectTimeoutRef.current);
-      reconnectTimeoutRef.current = null;
-    }
-    if (pingIntervalRef.current) {
-      clearInterval(pingIntervalRef.current);
-      pingIntervalRef.current = null;
-    }
-  }, []);
+  }, [cancelFlush, clearTimers]);
 
   const connect = useCallback(() => {
-    if (wsRef.current?.readyState === WebSocket.OPEN) {
-      return;
-    }
-
-    // Notify that reconnection is starting (if this is a reconnect)
-    if (isReconnectRef.current && onReconnectingRef.current) {
-      console.log('[WS] Reconnecting - resetting state');
-      onReconnectingRef.current();
-    }
-
+    const existing = wsRef.current;
+    if (existing?.readyState === WebSocket.OPEN || existing?.readyState === WebSocket.CONNECTING) return;
+    if (isReconnectRef.current) onReconnectingRef.current?.();
     clearTimers();
-    // Discard any buffered backlog from the previous socket: after a
-    // reconnect the server replays fresh state via {action:'refresh'}.
     cancelFlush();
     conflatorRef.current!.clear();
     setStatus('connecting');
 
     try {
-      const ws = new WebSocket(getWebSocketUrl());
+      const ws = new WebSocket(getWebSocketUrl(), wsAuthProtocols(tokenRef.current));
       wsRef.current = ws;
-
       ws.onopen = () => {
-        console.log('[WS] Connected to', getWebSocketUrl());
         setStatus('connected');
-        // Only the recovery is interesting, not the first connect: a trader
-        // who cannot see the book does not file a ticket, they leave.
         if (isReconnectRef.current) {
-          track(EV.socket_reconnected, {
-            socket: 'market',
-            attempts: reconnectAttemptRef.current,
-          });
+          track(EV.socket_reconnected, { socket: 'unified', attempts: reconnectAttemptRef.current });
         }
         reconnectAttemptRef.current = 0;
-
-        // Subscribe to market (use ref for current marketId)
-        console.log('[WS] Subscribing to market', marketIdRef.current);
-        ws.send(JSON.stringify({ action: 'subscribe', marketId: marketIdRef.current }));
-
-        // Request state refresh after reconnect
-        if (isReconnectRef.current) {
-          console.log('[WS] Requesting state refresh after reconnect for market', marketIdRef.current);
-          ws.send(JSON.stringify({ action: 'refresh', marketId: marketIdRef.current }));
-          if (onReconnectedRef.current) {
-            onReconnectedRef.current();
-          }
-        }
-
-        // Mark future connects as reconnects
+        sendSubscription(ws);
+        onReconnectedRef.current?.();
         isReconnectRef.current = true;
-
-        // Start ping interval
         pingIntervalRef.current = window.setInterval(() => {
-          if (ws.readyState === WebSocket.OPEN) {
-            ws.send(JSON.stringify({ action: 'ping' }));
-          }
+          if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ op: 'ping' }));
         }, PING_INTERVAL);
       };
 
-      ws.onmessage = (event) => {
+      ws.onmessage = event => {
         try {
+          const message = JSON.parse(event.data) as Record<string, unknown>;
+          if (!('type' in message) && 'omsOrderId' in message) {
+            onOrderEventRef.current?.(message as unknown as OmsOrderEvent);
+            return;
+          }
+          if (message.type === 'EXECUTION_HISTORY' || message.type === 'EXECUTION_REPORT') {
+            onExecutionEventRef.current?.(message as unknown as OmsExecutionEvent);
+            return;
+          }
           messageCount++;
           const now = Date.now();
-          // Log message + conflation rate every 5 seconds
           if (now - lastMessageLogTime >= 5000) {
-            const s = conflatorRef.current!.stats;
+            const stats = conflatorRef.current!.stats;
             console.log(
               `[WS] +${messageCount} msgs in last 5s | conflation totals:`,
-              `delivered ${s.delivered}, coalesced ${s.coalesced},`,
-              `droppedDeltas ${s.droppedBookDeltas}, refreshes ${s.bookRefreshes}`
+              `delivered ${stats.delivered}, coalesced ${stats.coalesced},`,
+              `droppedDeltas ${stats.droppedBookDeltas}, refreshes ${stats.bookRefreshes}`,
             );
             lastMessageLogTime = now;
             messageCount = 0;
           }
-          // omsOrderId arrives as a JSON string natively now (match#65)
-          const message = JSON.parse(event.data) as WebSocketMessage;
-          // Buffer + flush once per frame instead of dispatching synchronously
-          conflatorRef.current!.push(message);
+          conflatorRef.current!.push(message as unknown as WebSocketMessage);
           scheduleFlush();
-        } catch (e) {
-          console.error('Failed to parse WebSocket message:', e);
+        } catch (error) {
+          console.error('[WS] Failed to parse message:', error);
         }
       };
 
-      ws.onclose = (event) => {
-        console.log('[WS] Connection closed:', event.code, event.reason || '(no reason)');
+      ws.onclose = event => {
+        if (wsRef.current !== ws) return;
+        wsRef.current = null;
         setStatus('disconnected');
         track(EV.socket_disconnected, {
-          socket: 'market',
-          code: event.code,
-          clean: event.wasClean,
+          socket: 'unified', code: event.code, clean: event.wasClean,
           attempts: reconnectAttemptRef.current,
         });
         clearTimers();
-
-        // Attempt reconnect with exponential backoff
-        if (reconnectAttemptRef.current < MAX_RECONNECT_ATTEMPTS) {
-          const delay = Math.min(
-            INITIAL_RECONNECT_DELAY * Math.pow(1.5, reconnectAttemptRef.current),
-            MAX_RECONNECT_DELAY
-          );
-          reconnectAttemptRef.current++;
-          console.log(`[WS] Reconnecting in ${delay}ms (attempt ${reconnectAttemptRef.current})`);
-          reconnectTimeoutRef.current = window.setTimeout(connect, delay);
-        } else {
-          console.error('[WS] Max reconnection attempts reached');
+        if (!shouldReconnectRef.current) return;
+        if (reconnectAttemptRef.current >= MAX_RECONNECT_ATTEMPTS) {
           setStatus('error');
+          return;
         }
+        const delay = Math.min(
+          INITIAL_RECONNECT_DELAY * Math.pow(1.5, reconnectAttemptRef.current),
+          MAX_RECONNECT_DELAY,
+        );
+        reconnectAttemptRef.current++;
+        reconnectTimeoutRef.current = window.setTimeout(connect, delay);
       };
-
-      ws.onerror = (event) => {
-        console.error('[WS] WebSocket error:', event);
-        setStatus('error');
-      };
-    } catch (e) {
-      console.error('Failed to create WebSocket:', e);
+      ws.onerror = () => setStatus('error');
+    } catch (error) {
+      console.error('[WS] Failed to create WebSocket:', error);
       setStatus('error');
     }
-  }, [getWebSocketUrl, clearTimers, cancelFlush, scheduleFlush]);
+  }, [cancelFlush, clearTimers, scheduleFlush, sendSubscription]);
 
   const disconnect = useCallback(() => {
-    clearTimers();
-    cancelFlush();
-    conflatorRef.current!.clear();
-    reconnectAttemptRef.current = MAX_RECONNECT_ATTEMPTS; // Prevent reconnect
-    if (wsRef.current) {
-      wsRef.current.close();
-      wsRef.current = null;
-    }
+    shouldReconnectRef.current = false;
+    disconnectSocket();
     setStatus('disconnected');
-  }, [clearTimers, cancelFlush]);
+  }, [disconnectSocket]);
 
-  // Connect on mount, disconnect on unmount
   useEffect(() => {
+    tokenRef.current = token;
+    shouldReconnectRef.current = true;
+    reconnectAttemptRef.current = 0;
+    disconnectSocket();
     connect();
-    return () => {
-      disconnect();
-    };
-  }, [connect, disconnect]);
+    return disconnect;
+  }, [token, connect, disconnect, disconnectSocket]);
 
-  // Returning to a background tab: the browser may have frozen us, and the
-  // gateway conflates or kicks stalled clients (match#37) — whatever is on
-  // screen can be stale or partially resynced. On becoming visible, either
-  // request a fresh snapshot (socket alive) or reconnect immediately with
-  // the backoff reset (socket died while hidden).
+  useEffect(() => {
+    marketIdRef.current = marketId;
+    intervalRef.current = interval;
+    sendSubscription();
+  }, [marketId, interval, sendSubscription]);
+
   useEffect(() => {
     const onVisible = () => {
       if (document.visibilityState !== 'visible') return;
-      const ws = wsRef.current;
-      if (ws?.readyState === WebSocket.OPEN) {
-        console.log('[WS] Tab visible - requesting fresh snapshot for market', marketIdRef.current);
-        ws.send(JSON.stringify({ action: 'refresh', marketId: marketIdRef.current }));
-      } else if (reconnectAttemptRef.current < MAX_RECONNECT_ATTEMPTS) {
-        console.log('[WS] Tab visible with dead socket - reconnecting now');
+      if (wsRef.current?.readyState === WebSocket.OPEN) sendSubscription();
+      else {
         reconnectAttemptRef.current = 0;
-        if (reconnectTimeoutRef.current) {
-          clearTimeout(reconnectTimeoutRef.current);
-          reconnectTimeoutRef.current = null;
-        }
         connect();
       }
     };
     document.addEventListener('visibilitychange', onVisible);
     return () => document.removeEventListener('visibilitychange', onVisible);
-  }, [connect]);
+  }, [connect, sendSubscription]);
 
-  // requestRefresh lets consumers self-heal (e.g. the book rendering thin
-  // for several seconds) by pulling a fresh snapshot.
-  const requestRefresh = useCallback(() => {
-    if (wsRef.current?.readyState === WebSocket.OPEN) {
-      wsRef.current.send(JSON.stringify({ action: 'refresh', marketId: marketIdRef.current }));
-    }
-  }, []);
-
-  // Handle market changes by re-subscribing (without reconnecting)
-  useEffect(() => {
-    marketIdRef.current = marketId;
-    // If already connected, send new subscription
-    if (wsRef.current?.readyState === WebSocket.OPEN) {
-      console.log('[WS] Re-subscribing to market', marketId);
-      wsRef.current.send(JSON.stringify({ action: 'subscribe', marketId }));
-    }
-  }, [marketId]);
-
-  // Force reconnect - explicitly triggers onReconnecting callback
+  const requestRefresh = useCallback(() => sendSubscription(), [sendSubscription]);
   const forceReconnect = useCallback(() => {
     isReconnectRef.current = true;
     reconnectAttemptRef.current = 0;
-    if (wsRef.current) {
-      wsRef.current.close();
-      wsRef.current = null;
-    }
-    // connect() will be called by onclose handler, but we can also call directly for immediate effect
+    shouldReconnectRef.current = true;
+    disconnectSocket();
     connect();
-  }, [connect]);
+  }, [connect, disconnectSocket]);
 
   return { status, reconnect: connect, disconnect, forceReconnect, requestRefresh };
 }

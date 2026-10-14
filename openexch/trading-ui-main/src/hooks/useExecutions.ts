@@ -2,6 +2,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { API_BASE, getAuthHeaders } from '../config';
 import { fromWireMoney } from '../utils/money';
+import type { OmsExecution, OmsExecutionEvent } from '../types/market';
 
 /** GET /api/v1/executions entries (the caller's fills, oms#72); wire money
  *  strings parsed to numbers for display. */
@@ -25,6 +26,20 @@ interface State {
   error: string | null;
 }
 
+const EXECUTION_WS_EVENT = 'openexchange:execution';
+
+function fromWireExecution(execution: OmsExecution): ExecutionEntry {
+  return {
+    ...execution,
+    price: fromWireMoney(execution.price),
+    quantity: fromWireMoney(execution.quantity),
+  };
+}
+
+export function publishExecutionEvent(event: OmsExecutionEvent): void {
+  window.dispatchEvent(new CustomEvent<OmsExecutionEvent>(EXECUTION_WS_EVENT, { detail: event }));
+}
+
 /** Fetches the authenticated user's executions from the OMS REST API. */
 export function useExecutions() {
   const [state, setState] = useState<State>({ executions: [], loading: false, error: null });
@@ -45,12 +60,7 @@ export function useExecutions() {
         throw new Error(typeof body.error === 'string' ? body.error : `Error ${res.status}`);
       }
       const raw = (await res.json()) as unknown;
-      const executions: ExecutionEntry[] = (Array.isArray(raw) ? raw : []).map(e => ({
-        ...e,
-        // Money crosses as exact decimal strings (oms#39); numbers for display
-        price: fromWireMoney(e.price),
-        quantity: fromWireMoney(e.quantity),
-      }));
+      const executions: ExecutionEntry[] = (Array.isArray(raw) ? raw : []).map(fromWireExecution);
       executions.sort((a, b) => b.executedAtMs - a.executedAtMs);
       setState({ executions, loading: false, error: null });
     } catch (err) {
@@ -65,6 +75,27 @@ export function useExecutions() {
   useEffect(() => {
     refresh();
   }, [refresh]);
+
+  useEffect(() => {
+    const onExecution = (rawEvent: Event) => {
+      const event = (rawEvent as CustomEvent<OmsExecutionEvent>).detail;
+      if (event.type === 'EXECUTION_HISTORY') {
+        const executions = event.executions.map(fromWireExecution)
+          .sort((a, b) => b.executedAtMs - a.executedAtMs);
+        setState({ executions, loading: false, error: null });
+        return;
+      }
+      const execution = fromWireExecution(event.execution);
+      setState(current => ({
+        executions: [execution, ...current.executions.filter(existing =>
+          existing.tradeId !== execution.tradeId || existing.omsOrderId !== execution.omsOrderId)],
+        loading: false,
+        error: null,
+      }));
+    };
+    window.addEventListener(EXECUTION_WS_EVENT, onExecution);
+    return () => window.removeEventListener(EXECUTION_WS_EVENT, onExecution);
+  }, []);
 
   return { ...state, refresh };
 }

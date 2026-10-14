@@ -198,6 +198,22 @@ export interface CandleUpdateMessage {
   candle: CandleData;
 }
 
+export interface OmsExecution {
+  tradeId: string;
+  omsOrderId: string;
+  userId: number;
+  marketId: number;
+  side: 'BUY' | 'SELL';
+  price: string;
+  quantity: string;
+  maker: boolean;
+  executedAtMs: number;
+}
+
+export type OmsExecutionEvent =
+  | { type: 'EXECUTION_HISTORY'; executions: OmsExecution[] }
+  | { type: 'EXECUTION_REPORT'; execution: OmsExecution };
+
 export type WebSocketMessage =
   | TradesBatchMessage
   | BookSnapshotMessage
