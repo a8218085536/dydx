@@ -65,7 +65,7 @@ class HttpAuthHandlerTest {
     }
 
     @Test
-    void wsUpgradeAcceptsBearerSubprotocolToken() {
+    void wsUpgradeWithValidBearerAttachesPrincipal() {
         EmbeddedChannel ch = new EmbeddedChannel(new HttpAuthHandler(PROVIDER));
         FullHttpRequest req = get("/ws/v1");
         req.headers().set("Sec-WebSocket-Protocol", "bearer, good-key");
@@ -77,19 +77,36 @@ class HttpAuthHandlerTest {
     }
 
     @Test
-    void wsUpgradeRejectsQueryTokenAndMissingCredentials() {
-        // Tokens in the URL leak into logs/history — must NOT authenticate.
+    void wsUpgradeWithoutCredentialsPassesAsAnonymous() {
+        EmbeddedChannel ch = new EmbeddedChannel(new HttpAuthHandler(PROVIDER));
+        ch.writeInbound(get("/ws/v1"));
+        FullHttpRequest forwarded = ch.readInbound();
+        assertNotNull(forwarded, "anonymous websocket upgrade must be forwarded");
+        assertNull(ch.attr(HttpAuthHandler.PRINCIPAL).get());
+        forwarded.release();
+    }
+
+    @Test
+    void wsUpgradeWithInvalidBearerPassesAsAnonymous() {
+        EmbeddedChannel ch = new EmbeddedChannel(new HttpAuthHandler(PROVIDER));
+        FullHttpRequest req = get("/ws/v1");
+        req.headers().set("Sec-WebSocket-Protocol", "bearer, invalid-key");
+        ch.writeInbound(req);
+        FullHttpRequest forwarded = ch.readInbound();
+        assertNotNull(forwarded, "invalid websocket credentials must degrade to anonymous");
+        assertNull(ch.attr(HttpAuthHandler.PRINCIPAL).get());
+        forwarded.release();
+    }
+
+    @Test
+    void wsUpgradeQueryTokenPassesAsAnonymous() {
+        // Tokens in the URL leak into logs/history and must never authenticate.
         EmbeddedChannel ch = new EmbeddedChannel(new HttpAuthHandler(PROVIDER));
         ch.writeInbound(get("/ws/v1?token=good-key"));
-        FullHttpResponse resp = ch.readOutbound();
-        assertEquals(HttpResponseStatus.UNAUTHORIZED, resp.status());
-        resp.release();
-
-        ch = new EmbeddedChannel(new HttpAuthHandler(PROVIDER));
-        ch.writeInbound(get("/ws/v1"));
-        resp = ch.readOutbound();
-        assertEquals(HttpResponseStatus.UNAUTHORIZED, resp.status());
-        resp.release();
+        FullHttpRequest forwarded = ch.readInbound();
+        assertNotNull(forwarded);
+        assertNull(ch.attr(HttpAuthHandler.PRINCIPAL).get());
+        forwarded.release();
     }
 
     @Test
@@ -98,8 +115,9 @@ class HttpAuthHandlerTest {
         FullHttpRequest req = get("/ws/v1");
         req.headers().set("Sec-WebSocket-Protocol", "good-key");
         ch.writeInbound(req);
-        FullHttpResponse resp = ch.readOutbound();
-        assertEquals(HttpResponseStatus.UNAUTHORIZED, resp.status());
-        resp.release();
+        FullHttpRequest forwarded = ch.readInbound();
+        assertNotNull(forwarded);
+        assertNull(ch.attr(HttpAuthHandler.PRINCIPAL).get());
+        forwarded.release();
     }
 }

@@ -22,10 +22,12 @@ import com.openexchange.oms.api.rest.CorsPolicy;
 import java.nio.charset.StandardCharsets;
 
 /**
- * Authenticates every HTTP request (REST and the WebSocket upgrade) before
- * routing, and attaches the {@link Principal} to the channel. Failures get a
- * 401 and the connection closes. Exempt: CORS preflight and GET /api/v1/health
- * (process-manager liveness probes must not need credentials).
+ * Authenticates protected HTTP requests before routing and attaches the
+ * {@link Principal} to the channel. REST failures get a 401. The WebSocket
+ * upgrade is always forwarded; valid credentials attach a principal while
+ * missing or invalid credentials leave the connection anonymous. Exempt:
+ * CORS preflight and GET /api/v1/health (process-manager liveness probes must
+ * not need credentials).
  *
  * WebSocket note: browsers cannot set arbitrary headers on the upgrade
  * request, but they CAN set Sec-WebSocket-Protocol. A client that offers the
@@ -60,6 +62,17 @@ public final class HttpAuthHandler extends ChannelInboundHandlerAdapter {
             ctx.fireChannelRead(msg);
             return;
         }
+        if (isWebSocket(req.uri())) {
+            ctx.channel().attr(PRINCIPAL).set(null);
+            try {
+                Principal principal = provider.authenticate(headersOf(req));
+                ctx.channel().attr(PRINCIPAL).set(principal);
+            } catch (AuthenticationException ignored) {
+                // Authentication is optional for public WebSocket channels.
+            }
+            ctx.fireChannelRead(msg);
+            return;
+        }
         try {
             Principal principal = provider.authenticate(headersOf(req));
             ctx.channel().attr(PRINCIPAL).set(principal);
@@ -82,6 +95,10 @@ public final class HttpAuthHandler extends ChannelInboundHandlerAdapter {
         // they are necessarily reachable without a token.
         return path.equals("/api/v1/health") || path.equals("/metrics")
                 || path.equals("/api/v1/auth/register") || path.equals("/api/v1/auth/login");
+    }
+
+    private static boolean isWebSocket(String uri) {
+        return new QueryStringDecoder(uri).path().equals("/ws/v1");
     }
 
     private static AuthenticationProvider.Headers headersOf(FullHttpRequest req) {
