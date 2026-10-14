@@ -163,17 +163,63 @@ PARTIALLY_FILLED → FILLED | CANCELLED | REJECTED` (+ `PENDING_TRIGGER` for
 stop/trailing orders). `filledQty` derives from the authoritative trade
 stream, never from coalesced status updates.
 
-## OMS WebSocket (`/ws/v1` on :8080)
+## Unified WebSocket (`/ws/v1` on :8080)
 
-Subscribe protocol: `{"op":"subscribe","channels":["orders"],"userId":N}` —
-`userId` optional (defaults to the principal's own; the principal must be
-allowed to act as it). Ack: `{"type":"SUBSCRIBED","userId":N}`. Push events
-are the bare `OrderResponse` JSON (same shape as REST, no type wrapper —
-distinguish from acks by the presence of `omsOrderId`), delivered only to
-the order owner's connections. `{"op":"ping"}` → `{"type":"PONG"}` for
-client-side liveness (the server sends no heartbeats). Channels
-`executions`/`balances` are declared but not yet pushed. Browser auth: pass
-the token via the `Sec-WebSocket-Protocol` offer `['bearer', <token>]`.
+The upgrade is public. Anonymous clients can subscribe to `orderbook`,
+`trades`, and `candles`; no login is required for market data. A browser may
+unlock its own private channels by offering the session token during upgrade:
+
+```js
+new WebSocket("wss://host/ws/v1", ["bearer", sessionToken]);
+```
+
+Tokens in URLs or subscribe payloads are not accepted. Missing, invalid, or
+expired credentials leave the connection anonymous instead of rejecting the
+upgrade.
+
+Subscribe to one market and candle interval:
+
+```json
+{
+  "op": "subscribe",
+  "channels": ["orderbook", "trades", "candles"],
+  "marketId": 1,
+  "interval": "1m"
+}
+```
+
+Authenticated clients can add `orders` and `executions` to the same channels
+array. `userId` is ignored: private identity always comes from the upgrade
+principal. Supported candle intervals are `1m`, `5m`, `15m`, `1h`, `4h`, and
+`1d`. A successful request returns `{"type":"SUBSCRIBED",...}`.
+
+Initial `BOOK_SNAPSHOT`, `TRADES_BATCH`, and `CANDLE_HISTORY` frames are sent
+before buffered live `BOOK_DELTA`, `TRADES_BATCH`, and `CANDLE_UPDATE` frames.
+Changing market or interval with another subscribe replaces the old public
+subscription. `{"op":"unsubscribe"}` removes all subscriptions;
+`{"op":"ping"}` returns `{"type":"PONG"}`.
+
+Order events retain the compatibility shape: a bare `OrderResponse` JSON with
+no `type` wrapper. Execution subscription first sends:
+
+```json
+{"type":"EXECUTION_HISTORY","executions":[{...}]}
+```
+
+New fills then use:
+
+```json
+{"type":"EXECUTION_REPORT","execution":{...}}
+```
+
+History and live fills are scoped to the authenticated user and history is
+always emitted before a fill buffered during the history read. Anonymous
+private subscriptions return `ERROR` with code `AUTH_REQUIRED` without closing
+the socket or stopping existing public streams. Other control error codes are
+`INVALID_CHANNEL`, `INVALID_MARKET`, `INVALID_INTERVAL`,
+`UPSTREAM_UNAVAILABLE`, and `HISTORY_UNAVAILABLE`. The `balances` channel is
+reserved but does not yet emit live balance events. The legacy match-gateway
+`/spot/ws` endpoint remains available during migration.
 
 ## gRPC (`:9090`)
 
