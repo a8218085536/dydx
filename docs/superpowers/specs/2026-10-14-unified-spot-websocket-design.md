@@ -53,6 +53,19 @@ The existing `/spot/ws` public market-data endpoint remains available during
 frontend migration. It can be removed only after production clients have moved
 to `/ws/v1`; removal is outside this change.
 
+## Current Gap
+
+The current OMS `/ws/v1` does not expose recent public market trades. This is a
+backend capability gap, not a missing frontend subscription. The unified
+endpoint must add both parts of the public trade tape:
+
+- an initial recent-trades snapshot when the client subscribes;
+- subsequent live market-trade batches as matching produces them.
+
+The existing match gateway already produces the `TRADES_BATCH` payload used as
+the source for both the snapshot and live updates. OMS must bridge that payload
+to `/ws/v1`; the frontend must not poll REST to simulate a WebSocket stream.
+
 ## Architecture
 
 The OMS API continues to own `/ws/v1` and private user events. It gains an
@@ -120,6 +133,10 @@ snapshot before subsequent live events:
 - current order-book snapshot;
 - requested candle history;
 - latest available market trades.
+
+The public recent-trades snapshot and live market trades use the existing
+`TRADES_BATCH` event envelope. They are public market activity and must not be
+confused with the authenticated user's `executions` history or fill events.
 
 After a successful authenticated execution subscription, the server sends the
 recent execution-history snapshot for the authenticated user, then continues
