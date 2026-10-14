@@ -135,11 +135,12 @@ public class GatewayHttpHandler extends SimpleChannelInboundHandler<FullHttpRequ
         int marketId = parseQueryParam(uri, "marketId", 1);
         String interval = parseQueryString(uri, "interval", "1m");
         int limit = parseQueryParam(uri, "limit", 200);
-        limit = Math.min(limit, 500); // Cap kept from the ring-buffer era (API contract)
+        limit = Math.max(0, Math.min(limit, 500)); // limit=0 historically returns an empty list
+        long before = Math.max(0L, parseQueryLong(uri, "before", 0L));
 
         // DB-first with in-memory fallback; completes on a persistence read
         // thread — Netty marshals writeAndFlush back to the event loop.
-        stateManager.buildCandleHistoryJsonAsync(marketId, interval, limit)
+        stateManager.buildCandleHistoryJsonAsync(marketId, interval, limit, before)
                 .whenComplete((json, err) -> {
                     if (err != null) {
                         sendError(ctx, HttpResponseStatus.INTERNAL_SERVER_ERROR, err.getMessage());
@@ -293,6 +294,18 @@ public class GatewayHttpHandler extends SimpleChannelInboundHandler<FullHttpRequ
         }
         try {
             return Integer.parseInt(uri.substring(start, end));
+        } catch (NumberFormatException e) {
+            return defaultValue;
+        }
+    }
+
+    private long parseQueryLong(String uri, String param, long defaultValue) {
+        String value = parseQueryString(uri, param, null);
+        if (value == null) {
+            return defaultValue;
+        }
+        try {
+            return Long.parseLong(value);
         } catch (NumberFormatException e) {
             return defaultValue;
         }

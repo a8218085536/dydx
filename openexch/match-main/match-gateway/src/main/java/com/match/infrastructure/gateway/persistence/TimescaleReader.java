@@ -2,6 +2,7 @@
 package com.match.infrastructure.gateway.persistence;
 
 import com.match.infrastructure.gateway.state.Candle;
+import com.match.infrastructure.gateway.state.CandleTimeline;
 
 import java.sql.Connection;
 import java.sql.PreparedStatement;
@@ -77,6 +78,44 @@ public class TimescaleReader {
         }
         Collections.reverse(candles);
         return candles;
+    }
+
+    /** Continuous candle timeline ending strictly before {@code beforeExclusiveSec}. */
+    public List<Candle> getCandleTimeline(int marketId, String interval, int limit,
+                                          long beforeExclusiveSec) throws SQLException {
+        String view = VIEW_BY_INTERVAL.get(interval);
+        if (view == null || limit <= 0) {
+            return List.of();
+        }
+        long effectiveBefore = beforeExclusiveSec > 0
+                ? beforeExclusiveSec : System.currentTimeMillis() / 1_000L + 1L;
+        String sql = "SELECT extract(epoch FROM bucket)::bigint AS time, open, high, low, close,"
+                + " volume, trade_count FROM " + view
+                + " WHERE market_id = ? AND bucket < to_timestamp(?)"
+                + " ORDER BY bucket DESC LIMIT ?";
+        List<Candle> actual = new ArrayList<>();
+        try (Connection conn = db.getConnection();
+             PreparedStatement ps = conn.prepareStatement(sql)) {
+            ps.setInt(1, marketId);
+            ps.setLong(2, effectiveBefore);
+            ps.setInt(3, limit + 1);
+            try (ResultSet rs = ps.executeQuery()) {
+                while (rs.next()) {
+                    Candle c = new Candle();
+                    c.time = rs.getLong("time");
+                    c.open = rs.getDouble("open");
+                    c.high = rs.getDouble("high");
+                    c.low = rs.getDouble("low");
+                    c.close = rs.getDouble("close");
+                    c.volume = rs.getDouble("volume");
+                    c.tradeCount = (int) rs.getLong("trade_count");
+                    c.marketId = marketId;
+                    actual.add(c);
+                }
+            }
+        }
+        Collections.reverse(actual);
+        return CandleTimeline.fill(actual, marketId, interval, limit, effectiveBefore);
     }
 
     /** Most recent {@code limit} trades, newest first. marketId 0 = all markets. */

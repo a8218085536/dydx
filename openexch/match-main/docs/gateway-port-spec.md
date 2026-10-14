@@ -47,6 +47,12 @@ REST and new subscribers; counters for /metrics (`gateway_chain_breaks_total`,
 `gateway_deltas_dropped_stale_total`, stale-delta and stale-snapshot drop counts,
 `gateway_books_stale` gauge). A dropped frame is never forwarded.
 
+**Ticker guide-price boundary**: `indexPrice` is supplied by the external guide-price poller,
+not derived from the local order-book midpoint. Book snapshots and deltas must never overwrite
+it. Invalid, stale, non-positive, malformed, timed-out, or non-2xx refreshes retain the last valid
+guide price. The guide price does not fabricate `lastPrice`, trade counts, volume, high/low, or
+change fields for a market that has not traded.
+
 ## Invariants — GatewayStateManager
 
 **Snapshot path** (`onBookSnapshot`):
@@ -127,6 +133,7 @@ REST and new subscribers; counters for /metrics (`gateway_chain_breaks_total`,
 | SbeTest :: testOnBookDelta_HealthyChainedDelta_NoStaleKeyByteCompat | B3+D4: healthy path, no stale key |
 | SbeTest :: testOnBookDelta_AppliesDelta / _NewLevel / _DeleteLevel / _NoExistingBook_CreatesOne | D4: apply semantics; book auto-created |
 | SbeTest :: testOnBookSnapshot_* (creation/JSON/multi-market group) | Snapshot decode -> book state -> served JSON shape |
+| SbeTest :: testOnBookSnapshot_DoesNotOverwriteExternalIndexPrice | Book updates never replace the external guide price |
 | SbeTest :: testOnTradesBatch_* (incl. _PreV5Header_SideOmitted) | Trades fan-out; taker side mapping; pre-v5 upstream omits `side` |
 | SbeTest :: testOnOrderStatusBatch_DoesNotBroadcast | Order statuses never hit the public feed (privacy) |
 | SbeTest :: testOnNewLeader_NoCrash | Leader change is log-only; no state reset |
@@ -134,4 +141,4 @@ REST and new subscribers; counters for /metrics (`gateway_chain_breaks_total`,
 | OrderBookTest :: testMaxLevels_* | B4: 64-cap clamp, backfill-from-depth (match#70), replace-worst rule |
 | OrderBookTest :: testUpdateVersions_UpdatesMetadataAndRegeneratesJson | B1 fallback (per-side max) + cached-JSON regeneration |
 | OrderBookTest :: testInitialState_* / testUpdate_* / testToJson_* | B7 + snapshot-apply state + served JSON structure |
-| StateManagerTest :: (all) | Accessor contracts: null before data, empty buffers, null-WS tolerance |
+| StateManagerTest :: (all) | Accessor contracts: null before data, empty buffers, null-WS tolerance, external guide-price isolation |

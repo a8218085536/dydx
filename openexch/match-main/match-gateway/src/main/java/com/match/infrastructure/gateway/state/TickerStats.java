@@ -135,7 +135,7 @@ public class TickerStats {
         }
     }
 
-    /** Set the spot reference/index price derived from the best bid/ask midpoint. */
+    /** Set the externally sourced spot reference/index price. */
     public void updateIndexPrice(double price) {
         long stamp = lock.writeLock();
         try {

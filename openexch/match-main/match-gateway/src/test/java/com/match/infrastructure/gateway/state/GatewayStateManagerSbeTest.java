@@ -1,11 +1,18 @@
 // SPDX-License-Identifier: Apache-2.0
 package com.match.infrastructure.gateway.state;
 
+import com.google.gson.JsonObject;
+import com.google.gson.JsonParser;
 import com.match.domain.FixedPoint;
 import com.match.infrastructure.generated.*;
 import org.agrona.ExpandableDirectByteBuffer;
 import org.junit.Before;
 import org.junit.Test;
+
+import java.util.Collections;
+import java.util.List;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 
 import static org.junit.Assert.*;
 
@@ -129,6 +136,19 @@ public class GatewayStateManagerSbeTest {
         assertTrue(manager.getOrderBook(1).toJson().contains("ETH/USDT"));
         assertTrue(manager.getOrderBook(2).toJson().contains("BNB/USDT"));
         assertTrue(manager.getOrderBook(3).toJson().contains("BTC/USDT"));
+    }
+
+    @Test
+    public void testOnBookSnapshot_DoesNotOverwriteExternalIndexPrice() {
+        manager.updateExternalIndexPrice(1, 2496.53);
+
+        encodeAndProcessBookSnapshot(1, 12345L, 10, 20,
+            new long[][]{{fp(100.0), fp(5.0), 3}},
+            new long[][]{{fp(102.0), fp(8.0), 2}}
+        );
+
+        JsonObject ticker = JsonParser.parseString(manager.getTickerStats(1)).getAsJsonObject();
+        assertEquals(2496.53, ticker.get("indexPrice").getAsDouble(), 0.000001);
     }
 
     // ==================== BookSnapshot staleness guard (match#95) ====================
@@ -349,6 +369,102 @@ public class GatewayStateManagerSbeTest {
         String json = manager.getRecentTradesJson(10);
         assertTrue(json.contains("\"side\":\"BUY\""));
         assertTrue(json.contains("\"side\":\"SELL\""));
+    }
+
+    @Test
+    public void testOnTradesBatchBroadcastsEverySupportedCandleInterval() {
+        CapturingWebSocket ws = new CapturingWebSocket();
+        manager.setWebSocket(ws);
+
+        encodeAndProcessTradesBatch(1, 60_000L,
+            new long[][]{{fp(100.0), fp(2.0), 1, 60_000L}}
+        );
+
+        java.util.Set<String> intervals = ws.messages.stream()
+            .filter(m -> m.contains("\"type\":\"CANDLE_UPDATE\""))
+            .map(m -> com.google.gson.JsonParser.parseString(m).getAsJsonObject()
+                .get("interval").getAsString())
+            .collect(java.util.stream.Collectors.toSet());
+
+        assertEquals(java.util.Set.of("1m", "5m", "15m", "1h", "4h", "1d"), intervals);
+    }
+
+    @Test
+    public void testIdleCandleBroadcastFillsNewMinuteOnceWithZeroVolume() {
+        CapturingWebSocket ws = new CapturingWebSocket();
+        manager.setWebSocket(ws);
+        encodeAndProcessTradesBatch(1, 60_000L,
+            new long[][]{{fp(100.0), fp(2.0), 1, 60_000L}}
+        );
+        ws.messages.clear();
+
+        manager.broadcastIdleCandleUpdates(120_000L);
+        manager.broadcastIdleCandleUpdates(120_999L);
+
+        java.util.List<String> candleMessages = ws.messages.stream()
+            .filter(m -> m.contains("\"type\":\"CANDLE_UPDATE\""))
+            .toList();
+        assertEquals(1, candleMessages.size());
+
+        com.google.gson.JsonObject update = com.google.gson.JsonParser
+            .parseString(candleMessages.get(0)).getAsJsonObject();
+        assertEquals("1m", update.get("interval").getAsString());
+        com.google.gson.JsonObject candle = update.getAsJsonObject("candle");
+        assertEquals(120L, candle.get("time").getAsLong());
+        assertEquals(100.0, candle.get("open").getAsDouble(), 0.0);
+        assertEquals(100.0, candle.get("close").getAsDouble(), 0.0);
+        assertEquals(0.0, candle.get("volume").getAsDouble(), 0.0);
+        assertEquals(0, candle.get("tradeCount").getAsInt());
+    }
+
+    @Test
+    public void testIdleCandleBroadcastCatchesUpMissedMinuteBuckets() {
+        CapturingWebSocket ws = new CapturingWebSocket();
+        manager.setWebSocket(ws);
+        manager.inMemoryCandleProvider().onTrade(1, 100.0, 2.0, 1, 60_000L);
+
+        manager.broadcastIdleCandleUpdates(120_000L);
+        ws.messages.clear();
+        manager.broadcastIdleCandleUpdates(300_000L);
+
+        List<Long> minuteBuckets = ws.messages.stream()
+            .map(JsonParser::parseString)
+            .map(e -> e.getAsJsonObject())
+            .filter(e -> "CANDLE_UPDATE".equals(e.get("type").getAsString()))
+            .filter(e -> "1m".equals(e.get("interval").getAsString()))
+            .map(e -> e.getAsJsonObject("candle").get("time").getAsLong())
+            .toList();
+        assertEquals(List.of(180L, 240L, 300L), minuteBuckets);
+    }
+
+    @Test
+    public void testRealTradeUpdateCannotBeOverwrittenByConcurrentIdleCandle() throws Exception {
+        BlockingIdleWebSocket ws = new BlockingIdleWebSocket();
+        manager.inMemoryCandleProvider().onTrade(1, 100.0, 2.0, 1, 60_000L);
+        manager.setWebSocket(ws);
+
+        Thread heartbeat = new Thread(() -> manager.broadcastIdleCandleUpdates(120_000L));
+        heartbeat.start();
+        assertTrue(ws.idleEntered.await(1, TimeUnit.SECONDS));
+
+        Thread trade = new Thread(() -> encodeAndProcessTradesBatch(1, 120_000L,
+            new long[][]{{fp(101.0), fp(3.0), 1, 120_000L}}));
+        trade.start();
+        ws.realCandleBroadcasted.await(200, TimeUnit.MILLISECONDS);
+        ws.releaseIdle.countDown();
+        heartbeat.join(1_000);
+        trade.join(1_000);
+
+        JsonObject lastMinute = ws.messages.stream()
+            .map(JsonParser::parseString)
+            .map(e -> e.getAsJsonObject())
+            .filter(e -> e.has("interval") && "1m".equals(e.get("interval").getAsString()))
+            .reduce((first, second) -> second)
+            .orElseThrow();
+        JsonObject candle = lastMinute.getAsJsonObject("candle");
+        assertEquals(101.0, candle.get("close").getAsDouble(), 0.0);
+        assertEquals(3.0, candle.get("volume").getAsDouble(), 0.0);
+        assertEquals(1, candle.get("tradeCount").getAsInt());
     }
 
     @Test
@@ -744,6 +860,34 @@ public class GatewayStateManagerSbeTest {
 
         @Override
         public void broadcastMarketData(String jsonMessage) {
+            messages.add(jsonMessage);
+        }
+    }
+
+    private static final class BlockingIdleWebSocket
+            extends com.match.infrastructure.websocket.MarketDataWebSocket {
+        final List<String> messages = Collections.synchronizedList(new java.util.ArrayList<>());
+        final CountDownLatch idleEntered = new CountDownLatch(1);
+        final CountDownLatch releaseIdle = new CountDownLatch(1);
+        final CountDownLatch realCandleBroadcasted = new CountDownLatch(1);
+
+        @Override
+        public void broadcastMarketData(String jsonMessage) {
+            JsonObject json = JsonParser.parseString(jsonMessage).getAsJsonObject();
+            if (json.has("interval") && "1m".equals(json.get("interval").getAsString())) {
+                JsonObject candle = json.getAsJsonObject("candle");
+                if (candle.get("time").getAsLong() == 120L
+                        && candle.get("volume").getAsDouble() == 0.0) {
+                    idleEntered.countDown();
+                    try {
+                        releaseIdle.await(1, TimeUnit.SECONDS);
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                    }
+                } else if (candle.get("time").getAsLong() == 120L) {
+                    realCandleBroadcasted.countDown();
+                }
+            }
             messages.add(jsonMessage);
         }
     }

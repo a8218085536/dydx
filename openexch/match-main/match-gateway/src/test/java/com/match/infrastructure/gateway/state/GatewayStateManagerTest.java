@@ -1,6 +1,9 @@
 // SPDX-License-Identifier: Apache-2.0
 package com.match.infrastructure.gateway.state;
 
+import com.google.gson.JsonArray;
+import com.google.gson.JsonObject;
+import com.google.gson.JsonParser;
 import org.junit.Before;
 import org.junit.Test;
 
@@ -72,6 +75,28 @@ public class GatewayStateManagerTest {
         assertNull(manager.getTickerStats(1));
         assertNull(manager.getTickerStats(2));
         assertNull(manager.getTickerStats(999));
+    }
+
+    @Test
+    public void externalIndexPriceAppearsWithoutFabricatingTradePrice() {
+        manager.updateExternalIndexPrice(1, 2496.53);
+
+        JsonArray tickers = JsonParser.parseString(manager.getAllTickerStats()).getAsJsonArray();
+        JsonObject eth = tickers.get(0).getAsJsonObject();
+        assertEquals(2496.53, eth.get("indexPrice").getAsDouble(), 0.000001);
+        assertTrue("guide price must not become a fake last trade", eth.get("lastPrice").isJsonNull());
+    }
+
+    @Test
+    public void invalidExternalIndexPriceDoesNotOverwriteLastValidValue() {
+        manager.updateExternalIndexPrice(1, 2496.53);
+        manager.updateExternalIndexPrice(1, 0);
+        manager.updateExternalIndexPrice(1, -1);
+        manager.updateExternalIndexPrice(1, Double.NaN);
+        manager.updateExternalIndexPrice(1, Double.POSITIVE_INFINITY);
+
+        JsonObject eth = JsonParser.parseString(manager.getTickerStats(1)).getAsJsonObject();
+        assertEquals(2496.53, eth.get("indexPrice").getAsDouble(), 0.000001);
     }
 
     // ==================== WebSocket ====================

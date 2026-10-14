@@ -23,6 +23,7 @@ public class MarketDataReadServiceTest {
     private MarketDataReadService service;
     private final AtomicInteger readerCalls = new AtomicInteger();
     private volatile boolean readerFails = false;
+    private volatile long beforeSeen = -1;
 
     private class FakeReader extends TimescaleReader {
         FakeReader() {
@@ -47,6 +48,13 @@ public class MarketDataReadServiceTest {
             c.marketId = marketId;
             candles.add(c);
             return candles;
+        }
+
+        @Override
+        public List<Candle> getCandleTimeline(int marketId, String interval, int limit,
+                                              long beforeExclusiveSec) throws SQLException {
+            beforeSeen = beforeExclusiveSec;
+            return getCandles(marketId, interval, limit);
         }
     }
 
@@ -100,6 +108,25 @@ public class MarketDataReadServiceTest {
         // Different key -> its own query
         service.candleHistoryJson(2, "1m", 200, () -> "FALLBACK").join();
         assertEquals(2, readerCalls.get());
+    }
+
+    @Test
+    public void testHistoricalCursorIsForwardedAndSeparatesCacheEntries() {
+        db.markUp();
+        db.markSchemaReadyForTests();
+
+        service.candleHistoryJson(1, "1m", 200, 1_000, () -> "FALLBACK").join();
+        assertEquals(1_000L, beforeSeen);
+        assertEquals(1, readerCalls.get());
+
+        service.candleHistoryJson(1, "1m", 200, 2_000, () -> "FALLBACK").join();
+        assertEquals(2_000L, beforeSeen);
+        assertEquals(2, readerCalls.get());
+
+        // Cursor pages are intentionally uncached: arbitrary public cursor
+        // values must not create an unbounded permanent key set.
+        service.candleHistoryJson(1, "1m", 200, 2_000, () -> "FALLBACK").join();
+        assertEquals(3, readerCalls.get());
     }
 
     @Test

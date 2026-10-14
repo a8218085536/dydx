@@ -64,6 +64,15 @@ public class GatewayStateManager implements AeronGateway.EgressMessageListener {
     // Reference to WebSocket for broadcasting to clients
     private volatile MarketDataWebSocket webSocket;
 
+    // Candle mutation and CANDLE_UPDATE publication share one order across the
+    // egress and heartbeat threads, so an idle update cannot overwrite a real trade.
+    private final Object candleUpdateLock = new Object();
+
+    // Last candle bucket emitted per market and interval. Guarded by candleUpdateLock.
+    private final long[][] lastIdleCandleBucket = new long[6][InMemoryCandleProvider.INTERVALS.length];
+    private final boolean[][] idleHeartbeatInitialized = new boolean[6][InMemoryCandleProvider.INTERVALS.length];
+    private static final int MAX_IDLE_CATCH_UP_BUCKETS = 500;
+
     // Market-data persistence (TimescaleDB). Null when disabled by env — every
     // path below then collapses to the pre-persistence in-memory behavior.
     private volatile com.match.infrastructure.gateway.persistence.MarketDataPersistence persistence;
@@ -179,7 +188,6 @@ public class GatewayStateManager implements AeronGateway.EgressMessageListener {
             // match#96: a snapshot re-anchors the chain and clears any stale flag (in update()).
             boolean wasStale = orderBook.isStale();
             orderBook.update(marketId, marketName, bidsArray, asksArray, bidVersion, askVersion, version, timestamp);
-            updateIndexPriceFromBook(marketId, marketName, orderBook);
             if (wasStale) {
                 logger.info("match#96: market=" + marketId + " book recovered — snapshot re-anchored"
                     + " chain at bookVersion=" + version + " (was stale)");
@@ -288,7 +296,6 @@ public class GatewayStateManager implements AeronGateway.EgressMessageListener {
 
             // Update versions on this market's order book
             orderBook.updateVersions(marketId, marketName, bidVersion, askVersion, bookVersion, timestamp);
-            updateIndexPriceFromBook(marketId, marketName, orderBook);
 
             // Build JSON and broadcast to WebSocket
             if (webSocket != null && !changesArray.isEmpty()) {
@@ -350,20 +357,6 @@ public class GatewayStateManager implements AeronGateway.EgressMessageListener {
             // Update local state
             trades.addBatch(marketId, marketName, tradesArray);
 
-            // Update candles from each trade (tradeCount-aware so candle
-            // trade counts match the persisted trades, which sum trade_count)
-            for (int i = 0; i < tradesArray.size(); i++) {
-                JsonObject t = tradesArray.get(i).getAsJsonObject();
-                candleProvider.onTrade(
-                    marketId,
-                    t.get("price").getAsDouble(),
-                    t.get("quantity").getAsDouble(),
-                    t.get("tradeCount").getAsInt(),
-                    t.get("timestamp").getAsLong()
-                );
-            }
-            updatePriceChangePercent1h(marketId, tickerStats);
-
             // Build JSON and broadcast to WebSocket
             if (webSocket != null && !tradesArray.isEmpty()) {
                 String json = buildTradesBatchJson(marketId, marketName, timestamp, tradesArray);
@@ -373,11 +366,40 @@ public class GatewayStateManager implements AeronGateway.EgressMessageListener {
                 String tickerJson = tickerStats.toJson();
                 webSocket.broadcastMarketData(tickerJson);
 
-                // Broadcast current 1m candle update
-                Candle currentCandle = candleProvider.getCurrentCandle(marketId, "1m");
-                if (currentCandle != null) {
-                    String candleJson = buildCandleUpdateJson(marketId, marketName, currentCandle);
-                    webSocket.broadcastMarketData(candleJson);
+            }
+
+            // Update and publish candles under the same lock used by the idle
+            // heartbeat. This preserves publication order when both threads
+            // target the same bucket.
+            synchronized (candleUpdateLock) {
+                for (int i = 0; i < tradesArray.size(); i++) {
+                    JsonObject t = tradesArray.get(i).getAsJsonObject();
+                    candleProvider.onTrade(
+                        marketId,
+                        t.get("price").getAsDouble(),
+                        t.get("quantity").getAsDouble(),
+                        t.get("tradeCount").getAsInt(),
+                        t.get("timestamp").getAsLong()
+                    );
+                }
+                updatePriceChangePercent1h(marketId, tickerStats);
+
+                MarketDataWebSocket target = webSocket;
+                if (target != null && !tradesArray.isEmpty()) {
+                    // Every interval is already maintained by the shared candle
+                    // provider, so publish each current bucket from the same source.
+                    int intervalIndex = 0;
+                    for (String interval : InMemoryCandleProvider.INTERVALS) {
+                        Candle currentCandle = candleProvider.getCurrentCandle(marketId, interval);
+                        if (currentCandle != null) {
+                            String candleJson = buildCandleUpdateJson(
+                                    marketId, marketName, interval, currentCandle);
+                            target.broadcastMarketData(candleJson);
+                            lastIdleCandleBucket[marketId][intervalIndex] = Math.max(
+                                    lastIdleCandleBucket[marketId][intervalIndex], currentCandle.time);
+                        }
+                        intervalIndex++;
+                    }
                 }
             }
         } catch (Exception e) {
@@ -390,14 +412,6 @@ public class GatewayStateManager implements AeronGateway.EgressMessageListener {
      */
     private TickerStats getOrCreateTickerStats(int marketId, String marketName) {
         return tickerStatsByMarket.computeIfAbsent(marketId, k -> new TickerStats(marketId, marketName));
-    }
-
-    /** Keep the spot reference price aligned with the current best bid/ask midpoint. */
-    private void updateIndexPriceFromBook(int marketId, String marketName, GatewayOrderBook book) {
-        if (book.getBidCount() > 0 && book.getAskCount() > 0) {
-            double midpoint = (book.getBidPrice(0) + book.getAskPrice(0)) / 2.0;
-            getOrCreateTickerStats(marketId, marketName).updateIndexPrice(midpoint);
-        }
     }
 
     /** Compute the one-hour percentage move from the last two hourly candles. */
@@ -494,14 +508,65 @@ public class GatewayStateManager implements AeronGateway.EgressMessageListener {
     }
 
     // Build JSON for WebSocket broadcast - candle update
-    private String buildCandleUpdateJson(int marketId, String market, Candle candle) {
+    private String buildCandleUpdateJson(int marketId, String market, String interval, Candle candle) {
         JsonObject obj = new JsonObject();
         obj.addProperty("type", "CANDLE_UPDATE");
         obj.addProperty("marketId", marketId);
         obj.addProperty("market", market);
-        obj.addProperty("interval", "1m");
+        obj.addProperty("interval", interval);
         obj.add("candle", candleToJson(candle));
         return obj.toString();
+    }
+
+    /** Emit zero-activity candles for elapsed buckets, bounded after scheduler delays. */
+    public int broadcastIdleCandleUpdates(long nowMs) {
+        synchronized (candleUpdateLock) {
+            MarketDataWebSocket target = webSocket;
+            if (target == null || nowMs < 0) {
+                return 0;
+            }
+
+            int emitted = 0;
+            long nowSec = nowMs / 1_000L;
+            for (int marketId = 1; marketId <= 3; marketId++) {
+                String market = getMarketName(marketId);
+                for (int i = 0; i < InMemoryCandleProvider.INTERVALS.length; i++) {
+                    String interval = InMemoryCandleProvider.INTERVALS[i];
+                    long intervalSec = CandleTimeline.intervalSeconds(interval);
+                    long currentBucket = (nowSec / intervalSec) * intervalSec;
+                    Candle latest = candleProvider.getCurrentCandle(marketId, interval);
+                    if (latest == null) {
+                        continue;
+                    }
+
+                    long nextBucket;
+                    if (!idleHeartbeatInitialized[marketId][i]) {
+                        idleHeartbeatInitialized[marketId][i] = true;
+                        nextBucket = currentBucket;
+                    } else {
+                        nextBucket = lastIdleCandleBucket[marketId][i] + intervalSec;
+                    }
+
+                    if (latest.time >= currentBucket || nextBucket > currentBucket) {
+                        lastIdleCandleBucket[marketId][i] = Math.max(
+                                lastIdleCandleBucket[marketId][i], latest.time);
+                        continue;
+                    }
+
+                    long firstAllowed = currentBucket
+                            - (long) (MAX_IDLE_CATCH_UP_BUCKETS - 1) * intervalSec;
+                    nextBucket = Math.max(nextBucket, firstAllowed);
+                    while (nextBucket <= currentBucket) {
+                        Candle empty = CandleTimeline.emptyCandle(marketId, nextBucket, latest.close);
+                        target.broadcastMarketData(buildCandleUpdateJson(marketId, market, interval, empty));
+                        lastIdleCandleBucket[marketId][i] = nextBucket;
+                        emitted++;
+                        nextBucket += intervalSec;
+                    }
+                }
+            }
+            return emitted;
+        }
     }
 
     /**
@@ -509,7 +574,16 @@ public class GatewayStateManager implements AeronGateway.EgressMessageListener {
      * pre-persistence behavior; the DB-first path is buildCandleHistoryJsonAsync).
      */
     public String buildCandleHistoryJson(int marketId, String interval, int limit) {
-        java.util.List<Candle> candles = candleProvider.getCandles(marketId, interval, limit);
+        return buildCandleHistoryJson(marketId, interval, limit, 0);
+    }
+
+    public String buildCandleHistoryJson(int marketId, String interval, int limit,
+                                         long beforeExclusiveSec) {
+        long effectiveBefore = beforeExclusiveSec > 0
+                ? beforeExclusiveSec : System.currentTimeMillis() / 1_000L + 1L;
+        java.util.List<Candle> actual = candleProvider.getCandles(marketId, interval, 500);
+        java.util.List<Candle> candles = CandleTimeline.fill(
+                actual, marketId, interval, limit, effectiveBefore);
         return candleHistoryJson(marketId, getMarketName(marketId), interval, candles);
     }
 
@@ -597,13 +671,18 @@ public class GatewayStateManager implements AeronGateway.EgressMessageListener {
      */
     public java.util.concurrent.CompletableFuture<String> buildCandleHistoryJsonAsync(
             int marketId, String interval, int limit) {
+        return buildCandleHistoryJsonAsync(marketId, interval, limit, 0);
+    }
+
+    public java.util.concurrent.CompletableFuture<String> buildCandleHistoryJsonAsync(
+            int marketId, String interval, int limit, long beforeExclusiveSec) {
         com.match.infrastructure.gateway.persistence.MarketDataPersistence p = persistence;
         if (p == null) {
             return java.util.concurrent.CompletableFuture.completedFuture(
-                    buildCandleHistoryJson(marketId, interval, limit));
+                    buildCandleHistoryJson(marketId, interval, limit, beforeExclusiveSec));
         }
-        return p.reads().candleHistoryJson(marketId, interval, limit,
-                () -> buildCandleHistoryJson(marketId, interval, limit));
+        return p.reads().candleHistoryJson(marketId, interval, limit, beforeExclusiveSec,
+                () -> buildCandleHistoryJson(marketId, interval, limit, beforeExclusiveSec));
     }
 
     /** DB-first dYdX-compatible sparkline data with in-memory fallback. */
@@ -690,6 +769,14 @@ public class GatewayStateManager implements AeronGateway.EgressMessageListener {
     public String getTickerStats(int marketId) {
         TickerStats stats = tickerStatsByMarket.get(marketId);
         return stats != null ? stats.toJson() : null;
+    }
+
+    /** Update a market's externally sourced guide price without touching trade statistics. */
+    public void updateExternalIndexPrice(int marketId, double price) {
+        if (marketId < 1 || marketId > 3 || !Double.isFinite(price) || price <= 0) {
+            return;
+        }
+        getOrCreateTickerStats(marketId, getMarketName(marketId)).updateIndexPrice(price);
     }
 
     /** Stable ticker snapshot for public subscriptions, including empty markets. */

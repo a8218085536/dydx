@@ -47,6 +47,38 @@ public class GatewayHttpHandlerTest {
         return body;
     }
 
+    @Test
+    public void testCandlesBeforeReturnsOnlyEarlierBuckets() {
+        stateManager.inMemoryCandleProvider().onTrade(1, 100.0, 1.0, 60_000L);
+        stateManager.inMemoryCandleProvider().onTrade(1, 101.0, 1.0, 120_000L);
+        stateManager.inMemoryCandleProvider().onTrade(1, 102.0, 1.0, 180_000L);
+
+        EmbeddedChannel channel = createChannel();
+        FullHttpResponse response = sendRequest(channel, HttpMethod.GET,
+                "/api/candles?marketId=1&interval=1m&limit=2&before=180");
+        assertEquals(HttpResponseStatus.OK, response.status());
+
+        JsonArray candles = JsonParser.parseString(getBody(response))
+                .getAsJsonObject().getAsJsonArray("candles");
+        assertEquals(2, candles.size());
+        assertEquals(60L, candles.get(0).getAsJsonObject().get("time").getAsLong());
+        assertEquals(120L, candles.get(1).getAsJsonObject().get("time").getAsLong());
+        channel.finish();
+    }
+
+    @Test
+    public void testCandlesLimitZeroRemainsEmptyForCompatibility() {
+        stateManager.inMemoryCandleProvider().onTrade(1, 100.0, 1.0, 60_000L);
+        EmbeddedChannel channel = createChannel();
+        FullHttpResponse response = sendRequest(channel, HttpMethod.GET,
+                "/api/candles?marketId=1&interval=1m&limit=0");
+
+        JsonArray candles = JsonParser.parseString(getBody(response))
+                .getAsJsonObject().getAsJsonArray("candles");
+        assertTrue(candles.isEmpty());
+        channel.finish();
+    }
+
     // ==================== Health ====================
 
     @Test

@@ -50,12 +50,22 @@ public final class MarketDataReadService implements AutoCloseable {
 
     public CompletableFuture<String> candleHistoryJson(int marketId, String interval, int limit,
                                                        Supplier<String> memoryFallback) {
+        return candleHistoryJson(marketId, interval, limit, 0, memoryFallback);
+    }
+
+    public CompletableFuture<String> candleHistoryJson(int marketId, String interval, int limit,
+                                                       long beforeExclusiveSec,
+                                                       Supplier<String> memoryFallback) {
         if (!db.isReady() || !TimescaleReader.supportsInterval(interval)) {
             db.readFallbacks.incrementAndGet();
             return CompletableFuture.completedFuture(memoryFallback.get());
         }
-        return cachedRead("c:" + marketId + ":" + interval + ":" + limit, memoryFallback, () -> {
-            List<Candle> candles = reader.getCandles(marketId, interval, limit);
+        String cacheKey = beforeExclusiveSec > 0
+                ? null : "c:" + marketId + ":" + interval + ":" + limit;
+        return cachedRead(cacheKey,
+                memoryFallback, () -> {
+            List<Candle> candles = reader.getCandleTimeline(
+                    marketId, interval, limit, beforeExclusiveSec);
             return GatewayStateManager.candleHistoryJson(marketId, marketName(marketId), interval, candles);
         });
     }
@@ -96,7 +106,7 @@ public final class MarketDataReadService implements AutoCloseable {
 
     private CompletableFuture<String> cachedRead(String key, Supplier<String> memoryFallback,
                                                  SqlSupplier query) {
-        CachedJson cached = cache.get(key);
+        CachedJson cached = key == null ? null : cache.get(key);
         long now = System.currentTimeMillis();
         if (cached != null && now - cached.atMs() < CACHE_TTL_MS) {
             return CompletableFuture.completedFuture(cached.json());
@@ -104,7 +114,9 @@ public final class MarketDataReadService implements AutoCloseable {
         return CompletableFuture.supplyAsync(() -> {
             try {
                 String json = query.get();
-                cache.put(key, new CachedJson(json, System.currentTimeMillis()));
+                if (key != null) {
+                    cache.put(key, new CachedJson(json, System.currentTimeMillis()));
+                }
                 return json;
             } catch (Exception e) {
                 throw new java.util.concurrent.CompletionException(e);

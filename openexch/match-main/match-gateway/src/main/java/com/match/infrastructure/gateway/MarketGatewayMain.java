@@ -4,8 +4,11 @@ package com.match.infrastructure.gateway;
 import com.match.infrastructure.admin.ClusterStatus;
 import com.match.infrastructure.gateway.edge.EdgePublisher;
 import com.match.infrastructure.gateway.persistence.MarketDataPersistence;
+import com.match.infrastructure.gateway.price.IndexPricePoller;
 import com.match.infrastructure.gateway.state.GatewayStateManager;
 import com.match.infrastructure.websocket.MarketDataWebSocket;
+
+import java.time.Duration;
 
 /**
  * Market Gateway - broadcasts market data from cluster to WebSocket clients.
@@ -20,12 +23,22 @@ public class MarketGatewayMain implements AutoCloseable {
     private final ClusterStatus clusterStatus;
     private final MarketDataPersistence persistence; // null when explicitly configured for memory mode
     private final EdgePublisher edgePublisher; // null when MARKET_EDGE_URL unset
+    private final IndexPricePoller indexPricePoller;
+    private final CandleHeartbeatScheduler candleHeartbeatScheduler;
 
     public MarketGatewayMain() {
         this.clusterStatus = new ClusterStatus();
 
         // Create state manager for local state caching
         this.stateManager = new GatewayStateManager();
+        this.indexPricePoller = new IndexPricePoller(
+                stateManager,
+                System.getenv().getOrDefault(
+                        "MARKET_INDEX_PRICE_BASE_URL",
+                        "http://127.0.0.1:28080/api/v1/index-prices"),
+                Duration.ofSeconds(5));
+        this.candleHeartbeatScheduler = new CandleHeartbeatScheduler(
+                stateManager, Duration.ofSeconds(1));
 
         // Market-data persistence (TimescaleDB): the source of truth for
         // chart/time-series data. Null (pure in-memory) when not configured.
@@ -68,6 +81,10 @@ public class MarketGatewayMain implements AutoCloseable {
         // Start WebSocket server
         marketDataWebSocket.start();
 
+        // Guide prices are independent of trades and order-book state.
+        indexPricePoller.start();
+        candleHeartbeatScheduler.start();
+
         clusterStatus.setMarketChannels(marketDataWebSocket.getChannels());
     }
 
@@ -77,6 +94,8 @@ public class MarketGatewayMain implements AutoCloseable {
 
     @Override
     public void close() {
+        candleHeartbeatScheduler.close();
+        indexPricePoller.close();
         if (edgePublisher != null) {
             edgePublisher.close();
         }

@@ -452,6 +452,10 @@ func buildServiceCatalog(cfg *config.Config, prof config.Profile) []ServiceDef {
 					// runs pure in-memory, exactly as before persistence existed.
 					"MARKET_PG_URL":  "jdbc:postgresql://localhost:5432/marketdata",
 					"MARKET_PG_USER": "market",
+					// Existing OMS guide-price API. The market gateway polls this
+					// loopback endpoint and exposes only valid, non-stale values as
+					// ticker indexPrice; failed polls retain the last valid value.
+					"MARKET_INDEX_PRICE_BASE_URL": "http://127.0.0.1:28080/api/v1/index-prices",
 					// Edge fan-out (match edge/market-relay): the gateway
 					// publishes each broadcast frame ONCE to the relay Worker,
 					// which fans out to all public viewers at the Cloudflare
