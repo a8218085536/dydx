@@ -27,6 +27,7 @@ import com.openexchange.oms.api.grpc.GrpcAccountService;
 import com.openexchange.oms.api.grpc.GrpcOrderService;
 import com.openexchange.oms.api.grpc.GrpcServer;
 import com.openexchange.oms.api.websocket.WebSocketHandler;
+import com.openexchange.oms.api.websocket.GatewayMarketDataSource;
 import com.openexchange.oms.cluster.ClusterClient;
 import com.openexchange.oms.cluster.OrderSubmission;
 import com.openexchange.oms.common.domain.Market;
@@ -445,7 +446,10 @@ public class OmsApplication {
         auditLog = AuditLog.open(config.auditLogPath());
 
         // 11b. WebSocket handler
-        WebSocketHandler wsHandler = new WebSocketHandler(authorizer);
+        WebSocketHandler wsHandler = new WebSocketHandler(
+                authorizer,
+                new GatewayMarketDataSource(config.marketGatewayUrl()),
+                java.util.Set.of(1, 2, 3));
 
         // 12. Order service
         OmsOrderServiceImpl orderServiceImpl = new OmsOrderServiceImpl(

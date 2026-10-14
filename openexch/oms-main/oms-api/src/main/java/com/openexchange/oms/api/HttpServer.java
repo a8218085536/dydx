@@ -139,6 +139,7 @@ public class HttpServer {
     }
 
     public void stop() {
+        webSocketHandler.close();
         if (serverChannel != null) {
             serverChannel.close();
         }
