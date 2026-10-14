@@ -42,7 +42,8 @@ public record OmsConfig(
     long aeAckTimeoutMs,
     long aeConnectTimeoutMs,
     String balanceFeedChannel,
-    int balanceFeedStreamId
+    int balanceFeedStreamId,
+    String marketGatewayUrl
 ) {
     public static OmsConfig loadDefaults() {
         return new OmsConfig(
@@ -70,7 +71,8 @@ public record OmsConfig(
             // (see assets' BalanceFeedRuntime), one stack-profile value for both sides.
             prop("BALANCE_FEED_CHANNEL", ""),
             intProp("BALANCE_FEED_STREAM_ID",
-                com.openexchange.oms.assets.AssetsClusterClient.DEFAULT_BALANCE_FEED_STREAM_ID)
+                com.openexchange.oms.assets.AssetsClusterClient.DEFAULT_BALANCE_FEED_STREAM_ID),
+            prop("OMS_MARKET_GATEWAY_URL", "http://127.0.0.1:8081")
         );
     }
 

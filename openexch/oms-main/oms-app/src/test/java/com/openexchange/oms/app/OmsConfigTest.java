@@ -24,12 +24,14 @@ class OmsConfigTest {
     private static final String HOLD_TIMEOUT_PROP = "oms.ae.hold.timeout.ms";
     private static final String ACK_TIMEOUT_PROP = "oms.ae.ack.timeout.ms";
     private static final String CONNECT_TIMEOUT_PROP = "oms.ae.connect.timeout.ms";
+    private static final String MARKET_GATEWAY_URL_PROP = "oms.market.gateway.url";
 
     @AfterEach
     void tearDown() {
         System.clearProperty(HOLD_TIMEOUT_PROP);
         System.clearProperty(ACK_TIMEOUT_PROP);
         System.clearProperty(CONNECT_TIMEOUT_PROP);
+        System.clearProperty(MARKET_GATEWAY_URL_PROP);
     }
 
     @Test
@@ -38,6 +40,7 @@ class OmsConfigTest {
         assertEquals(250L, config.aeHoldTimeoutMs());
         assertEquals(1000L, config.aeAckTimeoutMs());
         assertEquals(30_000L, config.aeConnectTimeoutMs());
+        assertEquals("http://127.0.0.1:8081", config.marketGatewayUrl());
     }
 
     @Test
@@ -56,6 +59,12 @@ class OmsConfigTest {
     void connectTimeoutOverride() {
         System.setProperty(CONNECT_TIMEOUT_PROP, "60000");
         assertEquals(60_000L, OmsConfig.loadDefaults().aeConnectTimeoutMs());
+    }
+
+    @Test
+    void marketGatewayUrlOverride() {
+        System.setProperty(MARKET_GATEWAY_URL_PROP, "http://127.0.0.1:28082");
+        assertEquals("http://127.0.0.1:28082", OmsConfig.loadDefaults().marketGatewayUrl());
     }
 
     @Test
