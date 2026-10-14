@@ -4,6 +4,7 @@ package com.openexchange.oms.api.websocket;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
+import com.openexchange.oms.api.OrderService;
 import com.openexchange.oms.api.auth.Authorizer;
 import com.openexchange.oms.api.auth.HttpAuthHandler;
 import com.openexchange.oms.api.auth.Principal;
@@ -49,6 +50,7 @@ public class WebSocketHandler extends SimpleChannelInboundHandler<WebSocketFrame
     private static final Set<String> PRIVATE_CHANNELS = Set.of("orders", "executions", "balances");
     private static final Set<String> CANDLE_INTERVALS = Set.of("1m", "5m", "15m", "1h", "4h", "1d");
     private static final int MAX_INIT_BUFFER = 512;
+    private static final int MAX_PRIVATE_INIT_BUFFER = 256;
 
     // userId → set of channels per connection
     private final Map<ChannelHandlerContext, Long> ctxToUserId = new ConcurrentHashMap<>();
@@ -57,10 +59,13 @@ public class WebSocketHandler extends SimpleChannelInboundHandler<WebSocketFrame
     // userId → set of contexts (for broadcasting updates to all connections of a user)
     private final Map<Long, Set<ChannelHandlerContext>> userConnections = new ConcurrentHashMap<>();
     private final Map<ChannelHandlerContext, PublicSubscription> publicSubscriptions = new ConcurrentHashMap<>();
+    private final Map<ChannelHandlerContext, PrivateInitialization> executionInitializations =
+            new ConcurrentHashMap<>();
 
     private final Authorizer authorizer;
     private final MarketDataSource marketDataSource;
     private final Set<Integer> supportedMarkets;
+    private final OrderService orderService;
     private final AtomicLong subscriptionGeneration = new AtomicLong();
 
     public WebSocketHandler() {
@@ -68,14 +73,23 @@ public class WebSocketHandler extends SimpleChannelInboundHandler<WebSocketFrame
     }
 
     public WebSocketHandler(Authorizer authorizer) {
-        this(authorizer, null, Set.of());
+        this(authorizer, null, Set.of(), null);
     }
 
     public WebSocketHandler(
             Authorizer authorizer, MarketDataSource marketDataSource, Set<Integer> supportedMarkets) {
+        this(authorizer, marketDataSource, supportedMarkets, null);
+    }
+
+    public WebSocketHandler(
+            Authorizer authorizer,
+            MarketDataSource marketDataSource,
+            Set<Integer> supportedMarkets,
+            OrderService orderService) {
         this.authorizer = authorizer;
         this.marketDataSource = marketDataSource;
         this.supportedMarkets = Set.copyOf(supportedMarkets);
+        this.orderService = orderService;
         if (marketDataSource != null) {
             marketDataSource.start(this.supportedMarkets.stream().mapToInt(Integer::intValue), this::onMarketFrame);
         }
@@ -150,6 +164,12 @@ public class WebSocketHandler extends SimpleChannelInboundHandler<WebSocketFrame
             sendError(ctx, "AUTH_REQUIRED", "Authentication is required for private channels");
             privateChannels.clear();
         }
+        executionInitializations.remove(ctx);
+        PrivateInitialization executionInitialization = null;
+        if (principal != null && privateChannels.contains("executions")) {
+            executionInitialization = new PrivateInitialization(principal.userId());
+            executionInitializations.put(ctx, executionInitialization);
+        }
         replacePrivateSubscription(ctx, principal, privateChannels);
 
         PublicSubscription subscription = null;
@@ -170,6 +190,40 @@ public class WebSocketHandler extends SimpleChannelInboundHandler<WebSocketFrame
         ctx.writeAndFlush(new TextWebSocketFrame(MAPPER.writeValueAsString(ack)));
 
         if (subscription != null) loadInitialState(ctx, subscription);
+        if (executionInitialization != null) loadExecutionHistory(ctx, executionInitialization);
+    }
+
+    private void loadExecutionHistory(
+            ChannelHandlerContext ctx, PrivateInitialization initialization) {
+        java.util.concurrent.CompletableFuture
+                .supplyAsync(() -> {
+                    if (orderService == null) {
+                        throw new IllegalStateException("Execution history service is unavailable");
+                    }
+                    return orderService.getExecutions(initialization.userId, 100, 0);
+                })
+                .whenComplete((executions, error) -> ctx.executor().execute(() -> {
+                    if (executionInitializations.get(ctx) != initialization
+                            || ctxToUserId.getOrDefault(ctx, 0L) != initialization.userId
+                            || !ctx.channel().isActive()) {
+                        return;
+                    }
+                    synchronized (initialization) {
+                        if (error == null) {
+                            ObjectNode history = MAPPER.createObjectNode();
+                            history.put("type", "EXECUTION_HISTORY");
+                            history.set("executions", MAPPER.valueToTree(executions));
+                            writeFrame(ctx, history.toString());
+                        } else {
+                            sendError(ctx, "HISTORY_UNAVAILABLE", rootMessage(error));
+                        }
+                        while (!initialization.buffer.isEmpty()) {
+                            writeFrame(ctx, initialization.buffer.removeFirst());
+                        }
+                        initialization.initializing = false;
+                    }
+                    executionInitializations.remove(ctx, initialization);
+                }));
     }
 
     private void replacePrivateSubscription(
@@ -299,6 +353,7 @@ public class WebSocketHandler extends SimpleChannelInboundHandler<WebSocketFrame
 
     private void removeConnection(ChannelHandlerContext ctx) {
         publicSubscriptions.remove(ctx);
+        executionInitializations.remove(ctx);
         Long userId = ctxToUserId.remove(ctx);
         ctxToChannels.remove(ctx);
         if (userId != null) {
@@ -327,6 +382,18 @@ public class WebSocketHandler extends SimpleChannelInboundHandler<WebSocketFrame
                 Set<String> subscribedChannels = ctxToChannels.get(ctx);
                 if (subscribedChannels != null && subscribedChannels.contains(channel)) {
                     if (ctx.channel().isActive()) {
+                        PrivateInitialization initialization = executionInitializations.get(ctx);
+                        if ("executions".equals(channel) && initialization != null) {
+                            synchronized (initialization) {
+                                if (initialization.initializing) {
+                                    if (initialization.buffer.size() == MAX_PRIVATE_INIT_BUFFER) {
+                                        initialization.buffer.removeFirst();
+                                    }
+                                    initialization.buffer.addLast(json);
+                                    continue;
+                                }
+                            }
+                        }
                         ctx.writeAndFlush(frame.retainedDuplicate());
                     }
                 }
@@ -344,6 +411,7 @@ public class WebSocketHandler extends SimpleChannelInboundHandler<WebSocketFrame
     public void close() {
         if (marketDataSource != null) marketDataSource.close();
         publicSubscriptions.clear();
+        executionInitializations.clear();
         ctxToUserId.clear();
         ctxToChannels.clear();
         userConnections.clear();
@@ -356,6 +424,16 @@ public class WebSocketHandler extends SimpleChannelInboundHandler<WebSocketFrame
     }
 
     private record PublicFrame(String type, int marketId, String interval) { }
+
+    private static final class PrivateInitialization {
+        private final long userId;
+        private final ArrayDeque<String> buffer = new ArrayDeque<>();
+        private boolean initializing = true;
+
+        private PrivateInitialization(long userId) {
+            this.userId = userId;
+        }
+    }
 
     private static final class PublicSubscription {
         private final int marketId;

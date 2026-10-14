@@ -4,6 +4,7 @@ package com.openexchange.oms.core;
 import com.openexchange.oms.common.domain.*;
 import com.openexchange.oms.common.enums.*;
 import java.util.ArrayList;
+import java.util.function.Consumer;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -28,6 +29,8 @@ public class OmsCoreEngine {
     private SettlementHandler settlementHandler;
     // Pluggable persistence handler
     private PersistenceHandler persistenceHandler;
+    // Pluggable live execution listener
+    private Consumer<ExecutionReport> executionListener;
     // Pluggable cluster submit handler
     private ClusterSubmitHandler clusterSubmitHandler;
     private Runnable postReconcileHook;
@@ -60,6 +63,7 @@ public class OmsCoreEngine {
 
     public void setSettlementHandler(SettlementHandler handler) { this.settlementHandler = handler; }
     public void setPersistenceHandler(PersistenceHandler handler) { this.persistenceHandler = handler; }
+    public void setExecutionListener(Consumer<ExecutionReport> listener) { this.executionListener = listener; }
     public void setClusterSubmitHandler(ClusterSubmitHandler handler) { this.clusterSubmitHandler = handler; }
 
     // ==================== Egress Event Processing ====================
@@ -135,20 +139,25 @@ public class OmsCoreEngine {
             return;
         }
 
-        // Create execution reports for both taker and maker
-        if (persistenceHandler != null) {
-            if (takerOmsOrderId != 0) {
-                ExecutionReport takerReport = createExecutionReport(tradeId, takerOmsOrderId,
-                    takerOrderId, takerUserId, marketId,
-                    takerIsBuy ? OrderSide.BUY : OrderSide.SELL,
-                    tradePrice, tradeQuantity, false);
+        // Create execution reports for both taker and maker. Live delivery does not depend on
+        // persistence being configured or healthy.
+        if (takerOmsOrderId != 0) {
+            ExecutionReport takerReport = createExecutionReport(tradeId, takerOmsOrderId,
+                takerOrderId, takerUserId, marketId,
+                takerIsBuy ? OrderSide.BUY : OrderSide.SELL,
+                tradePrice, tradeQuantity, false);
+            if (executionListener != null) executionListener.accept(takerReport);
+            if (persistenceHandler != null) {
                 persistenceHandler.persistExecution(takerReport);
             }
-            if (makerOmsOrderId != 0) {
-                ExecutionReport makerReport = createExecutionReport(tradeId, makerOmsOrderId,
-                    makerOrderId, makerUserId, marketId,
-                    takerIsBuy ? OrderSide.SELL : OrderSide.BUY,
-                    tradePrice, tradeQuantity, true);
+        }
+        if (makerOmsOrderId != 0) {
+            ExecutionReport makerReport = createExecutionReport(tradeId, makerOmsOrderId,
+                makerOrderId, makerUserId, marketId,
+                takerIsBuy ? OrderSide.SELL : OrderSide.BUY,
+                tradePrice, tradeQuantity, true);
+            if (executionListener != null) executionListener.accept(makerReport);
+            if (persistenceHandler != null) {
                 persistenceHandler.persistExecution(makerReport);
             }
         }

@@ -1,6 +1,13 @@
 // SPDX-License-Identifier: Apache-2.0
 package com.openexchange.oms.api.websocket;
 
+import com.openexchange.oms.api.OrderService;
+import com.openexchange.oms.api.auth.HttpAuthHandler;
+import com.openexchange.oms.api.auth.Principal;
+import com.openexchange.oms.api.auth.RoleBasedAuthorizer;
+import com.openexchange.oms.api.dto.ExecutionResponse;
+import com.openexchange.oms.common.domain.ExecutionReport;
+import com.openexchange.oms.common.enums.OrderSide;
 import io.netty.channel.embedded.EmbeddedChannel;
 import io.netty.handler.codec.http.websocketx.TextWebSocketFrame;
 import org.junit.jupiter.api.AfterEach;
@@ -9,6 +16,9 @@ import org.junit.jupiter.api.Test;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Set;
+import java.util.Map;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionStage;
 import java.util.function.Consumer;
@@ -18,6 +28,9 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
 
 class WebSocketHandlerTest {
 
@@ -133,6 +146,82 @@ class WebSocketHandlerTest {
         assertNull(channel.readOutbound());
     }
 
+    @Test
+    void authenticatedHistoryUsesPrincipalAndPrecedesRacingLiveExecution() throws Exception {
+        marketData = new FakeMarketDataSource(true);
+        OrderService orderService = mock(OrderService.class);
+        CountDownLatch queryStarted = new CountDownLatch(1);
+        CountDownLatch releaseQuery = new CountDownLatch(1);
+        ExecutionResponse historical = execution(11L, 101L);
+        when(orderService.getExecutions(101L, 100, 0)).thenAnswer(ignored -> {
+            queryStarted.countDown();
+            assertTrue(releaseQuery.await(2, TimeUnit.SECONDS));
+            return List.of(historical);
+        });
+        handler = new WebSocketHandler(
+                new RoleBasedAuthorizer(), marketData, Set.of(1, 2, 3), orderService);
+        EmbeddedChannel channel = authenticatedChannel(101L);
+
+        send(channel, "{\"op\":\"subscribe\",\"channels\":[\"executions\"],\"userId\":999}");
+        assertType(read(channel), "SUBSCRIBED");
+        assertTrue(queryStarted.await(2, TimeUnit.SECONDS));
+        handler.pushToUser(101L, "executions", Map.of(
+                "type", "EXECUTION_REPORT", "execution", execution(12L, 101L)));
+        assertNull(channel.readOutbound(), "live execution must wait behind history");
+
+        releaseQuery.countDown();
+        String history = readEventually(channel);
+        assertType(history, "EXECUTION_HISTORY");
+        assertTrue(history.contains("\"tradeId\":\"11\""), history);
+        String live = readEventually(channel);
+        assertType(live, "EXECUTION_REPORT");
+        assertTrue(live.contains("\"tradeId\":\"12\""), live);
+        verify(orderService).getExecutions(101L, 100, 0);
+    }
+
+    @Test
+    void liveExecutionsStayIsolatedAcrossUsersAndReachEveryTab() {
+        marketData = new FakeMarketDataSource(true);
+        OrderService orderService = mock(OrderService.class);
+        when(orderService.getExecutions(org.mockito.ArgumentMatchers.anyLong(),
+                org.mockito.ArgumentMatchers.eq(100), org.mockito.ArgumentMatchers.eq(0)))
+                .thenReturn(List.of());
+        handler = new WebSocketHandler(
+                new RoleBasedAuthorizer(), marketData, Set.of(1, 2, 3), orderService);
+        EmbeddedChannel userOneTabA = authenticatedChannel(101L);
+        EmbeddedChannel userOneTabB = authenticatedChannel(101L);
+        EmbeddedChannel userTwo = authenticatedChannel(202L);
+        for (EmbeddedChannel channel : List.of(userOneTabA, userOneTabB, userTwo)) {
+            send(channel, "{\"op\":\"subscribe\",\"channels\":[\"executions\"]}");
+            assertType(read(channel), "SUBSCRIBED");
+            assertType(readEventually(channel), "EXECUTION_HISTORY");
+        }
+
+        handler.pushToUser(101L, "executions", Map.of(
+                "type", "EXECUTION_REPORT", "execution", execution(21L, 101L)));
+
+        assertType(readEventually(userOneTabA), "EXECUTION_REPORT");
+        assertType(readEventually(userOneTabB), "EXECUTION_REPORT");
+        userTwo.runPendingTasks();
+        assertNull(userTwo.readOutbound());
+    }
+
+    @Test
+    void unavailableExecutionHistoryReturnsErrorWithoutClosingConnection() {
+        marketData = new FakeMarketDataSource(true);
+        OrderService orderService = mock(OrderService.class);
+        when(orderService.getExecutions(101L, 100, 0))
+                .thenThrow(new IllegalStateException("execution persistence unavailable"));
+        handler = new WebSocketHandler(
+                new RoleBasedAuthorizer(), marketData, Set.of(1, 2, 3), orderService);
+        EmbeddedChannel channel = authenticatedChannel(101L);
+
+        send(channel, "{\"op\":\"subscribe\",\"channels\":[\"executions\"]}");
+        assertType(read(channel), "SUBSCRIBED");
+        assertCode(readEventually(channel), "HISTORY_UNAVAILABLE");
+        assertTrue(channel.isActive());
+    }
+
     private EmbeddedChannel channel() {
         if (handler == null) {
             handler = new WebSocketHandler(
@@ -141,6 +230,27 @@ class WebSocketHandlerTest {
         EmbeddedChannel channel = new EmbeddedChannel(handler);
         channels.add(channel);
         return channel;
+    }
+
+    private EmbeddedChannel authenticatedChannel(long userId) {
+        EmbeddedChannel channel = new EmbeddedChannel(handler);
+        channel.attr(HttpAuthHandler.PRINCIPAL)
+                .set(new Principal("user-" + userId, userId, Set.of()));
+        channels.add(channel);
+        return channel;
+    }
+
+    private static ExecutionResponse execution(long tradeId, long userId) {
+        ExecutionReport report = new ExecutionReport();
+        report.setTradeId(tradeId);
+        report.setOmsOrderId(5000L + tradeId);
+        report.setUserId(userId);
+        report.setMarketId(1);
+        report.setSide(OrderSide.BUY);
+        report.setPrice(123_45000000L);
+        report.setQuantity(2_00000000L);
+        report.setExecutedAtMs(1_700_000_000_000L + tradeId);
+        return ExecutionResponse.fromExecution(report);
     }
 
     private static String subscribe(int marketId, String interval, String... subscribedChannels) {
@@ -158,6 +268,25 @@ class WebSocketHandlerTest {
         String text = frame.text();
         frame.release();
         return text;
+    }
+
+    private static String readEventually(EmbeddedChannel channel) {
+        for (int attempt = 0; attempt < 200; attempt++) {
+            channel.runPendingTasks();
+            TextWebSocketFrame frame = channel.readOutbound();
+            if (frame != null) {
+                String text = frame.text();
+                frame.release();
+                return text;
+            }
+            try {
+                Thread.sleep(5);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                throw new AssertionError("interrupted while awaiting outbound frame", e);
+            }
+        }
+        throw new AssertionError("timed out awaiting outbound frame");
     }
 
     private static void assertType(String json, String type) {

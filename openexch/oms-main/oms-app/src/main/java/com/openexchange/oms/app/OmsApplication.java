@@ -445,12 +445,6 @@ public class OmsApplication {
         CorsPolicy corsPolicy = CorsPolicy.fromSpec(config.corsOrigins());
         auditLog = AuditLog.open(config.auditLogPath());
 
-        // 11b. WebSocket handler
-        WebSocketHandler wsHandler = new WebSocketHandler(
-                authorizer,
-                new GatewayMarketDataSource(config.marketGatewayUrl()),
-                java.util.Set.of(1, 2, 3));
-
         // 12. Order service
         OmsOrderServiceImpl orderServiceImpl = new OmsOrderServiceImpl(
                 coreEngine, riskEngine, ledgerService, clusterClient,
@@ -459,7 +453,21 @@ public class OmsApplication {
         orderServiceImpl.setRepositories(orderRepo, executionRepo); // history reads (oms#40)
         OrderService orderService = orderServiceImpl;
 
-        // 12a. Auth seam (oms#36): provider per OMS_AUTH_MODE
+        // 12a. Unified public/private WebSocket handler. Private history reads use the same
+        // OrderService as REST, while live reports are sourced directly from the core engine.
+        WebSocketHandler wsHandler = new WebSocketHandler(
+                authorizer,
+                new GatewayMarketDataSource(config.marketGatewayUrl()),
+                java.util.Set.of(1, 2, 3),
+                orderService);
+        coreEngine.setExecutionListener(report -> wsHandler.pushToUser(
+                report.getUserId(),
+                "executions",
+                java.util.Map.of(
+                        "type", "EXECUTION_REPORT",
+                        "execution", com.openexchange.oms.api.dto.ExecutionResponse.fromExecution(report))));
+
+        // 12b. Auth seam (oms#36): provider per OMS_AUTH_MODE
         AuthService demoAuthService = "demo".equals(config.authMode())
                 ? new DemoAuthService(userRepo, orderService)
                 : null;
