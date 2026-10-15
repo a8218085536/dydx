@@ -1,0 +1,26 @@
+name: flydex-marketdata
+
+services:
+  marketdata:
+    image: timescale/timescaledb:2.15.3-pg13
+    container_name: flydex-marketdata
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: marketdata
+      POSTGRES_USER: market
+      POSTGRES_PASSWORD_FILE: /run/secrets/marketdata-password
+      TIMESCALEDB_TELEMETRY: "off"
+    ports:
+      - "127.0.0.1:5436:5432"
+    volumes:
+      - marketdata_pgdata:/var/lib/postgresql/data
+      - ../secrets/marketdata-postgres-password:/run/secrets/marketdata-password:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U market -d marketdata"]
+      interval: 5s
+      timeout: 5s
+      retries: 24
+      start_period: 10s
+
+volumes:
+  marketdata_pgdata:

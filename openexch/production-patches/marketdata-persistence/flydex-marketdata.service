@@ -1,0 +1,16 @@
+[Unit]
+Description=FlyDEX market-data TimescaleDB
+Requires=docker.service
+After=docker.service network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+WorkingDirectory=/home/ec2-user/flydex/neco-exchange/marketdata
+ExecStart=/usr/bin/docker compose -f docker-compose.yml up -d --wait
+ExecStop=/usr/bin/docker compose -f docker-compose.yml stop
+TimeoutStartSec=180
+TimeoutStopSec=60
+
+[Install]
+WantedBy=multi-user.target
