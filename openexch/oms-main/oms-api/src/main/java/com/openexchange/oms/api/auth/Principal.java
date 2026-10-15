@@ -22,6 +22,12 @@ public record Principal(String subject, long userId, Set<String> roles) {
      */
     public static final String ROLE_ANY_USER = "ANY_USER";
 
+    /** Dedicated account that may read and trade only its own inventory. */
+    public static final String ROLE_MARKET_MAKER = "MARKET_MAKER";
+
+    /** Trusted operator allowed to fund another user when paired with ANY_USER. */
+    public static final String ROLE_FUNDING_ADMIN = "FUNDING_ADMIN";
+
     public boolean hasRole(String role) {
         return roles.contains(role);
     }

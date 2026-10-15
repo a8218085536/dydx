@@ -50,7 +50,8 @@ public class GrpcOrderService extends OrderServiceGrpc.OrderServiceImplBase {
     public void createOrder(com.openexchange.oms.grpc.CreateOrderRequest request,
                              StreamObserver<com.openexchange.oms.grpc.CreateOrderResponse> responseObserver) {
         try {
-            Long userId = GrpcAuth.resolveUserId(authorizer, request.getUserId(), responseObserver);
+            Long userId = GrpcAuth.resolveUserId(authorizer, Authorizer.ACTION_TRADE_AS_USER,
+                    request.getUserId(), responseObserver);
             if (userId == null) return;
 
             CreateOrderRequest dto = new CreateOrderRequest();
@@ -98,7 +99,8 @@ public class GrpcOrderService extends OrderServiceGrpc.OrderServiceImplBase {
         try {
             // Ownership gate: not-found and not-yours are indistinguishable.
             OrderResponse existing = orderService.getOrder(request.getOmsOrderId());
-            if (existing != null && !GrpcAuth.canActAs(authorizer, existing.getUserId())) {
+            if (existing != null && !GrpcAuth.canActAs(
+                    authorizer, Authorizer.ACTION_TRADE_AS_USER, existing.getUserId())) {
                 responseObserver.onError(io.grpc.Status.NOT_FOUND.withDescription("Order not found").asRuntimeException());
                 return;
             }
@@ -125,7 +127,8 @@ public class GrpcOrderService extends OrderServiceGrpc.OrderServiceImplBase {
                           StreamObserver<com.openexchange.oms.grpc.OrderResponse> responseObserver) {
         try {
             OrderResponse resp = orderService.getOrder(request.getOmsOrderId());
-            if (resp == null || !GrpcAuth.canActAs(authorizer, resp.getUserId())) {
+            if (resp == null || !GrpcAuth.canActAs(
+                    authorizer, Authorizer.ACTION_READ_AS_USER, resp.getUserId())) {
                 responseObserver.onError(io.grpc.Status.NOT_FOUND.withDescription("Order not found").asRuntimeException());
                 return;
             }
@@ -141,7 +144,8 @@ public class GrpcOrderService extends OrderServiceGrpc.OrderServiceImplBase {
     public void getOrderHistory(OrderHistoryRequest request,
                                  StreamObserver<OrderHistoryResponse> responseObserver) {
         try {
-            Long userId = GrpcAuth.resolveUserId(authorizer, request.getUserId(), responseObserver);
+            Long userId = GrpcAuth.resolveUserId(authorizer, Authorizer.ACTION_READ_AS_USER,
+                    request.getUserId(), responseObserver);
             if (userId == null) return;
 
             var orders = orderService.getOrderHistory(userId,
@@ -170,7 +174,8 @@ public class GrpcOrderService extends OrderServiceGrpc.OrderServiceImplBase {
     public void getTrades(GetTradesRequest request,
                            StreamObserver<GetTradesResponse> responseObserver) {
         try {
-            Long userId = GrpcAuth.resolveUserId(authorizer, request.getUserId(), responseObserver);
+            Long userId = GrpcAuth.resolveUserId(authorizer, Authorizer.ACTION_READ_AS_USER,
+                    request.getUserId(), responseObserver);
             if (userId == null) return;
 
             var executions = orderService.getExecutions(userId, request.getLimit(), request.getOffset());
@@ -202,7 +207,8 @@ public class GrpcOrderService extends OrderServiceGrpc.OrderServiceImplBase {
 
     @Override
     public void streamOrders(StreamRequest request, StreamObserver<OrderUpdate> responseObserver) {
-        Long allowed = GrpcAuth.resolveUserId(authorizer, request.getUserId(), responseObserver);
+        Long allowed = GrpcAuth.resolveUserId(authorizer, Authorizer.ACTION_READ_AS_USER,
+                request.getUserId(), responseObserver);
         if (allowed == null) return;
         long userId = allowed;
         Set<StreamObserver<OrderUpdate>> observers =
@@ -219,7 +225,8 @@ public class GrpcOrderService extends OrderServiceGrpc.OrderServiceImplBase {
 
     @Override
     public void streamExecutions(StreamRequest request, StreamObserver<ExecutionReport> responseObserver) {
-        Long allowed = GrpcAuth.resolveUserId(authorizer, request.getUserId(), responseObserver);
+        Long allowed = GrpcAuth.resolveUserId(authorizer, Authorizer.ACTION_READ_AS_USER,
+                request.getUserId(), responseObserver);
         if (allowed == null) return;
         long userId = allowed;
         Set<StreamObserver<ExecutionReport>> observers =

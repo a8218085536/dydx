@@ -266,10 +266,10 @@ public class RestApiHandler extends SimpleChannelInboundHandler<FullHttpRequest>
         return rc.ctx().channel().attr(HttpAuthHandler.PRINCIPAL).get();
     }
 
-    /** Whether the authenticated caller may act as the given user. */
-    private boolean canActAs(RequestContext rc, long userId) {
+    /** Whether the authenticated caller may perform the action for the given user. */
+    private boolean canPerformAs(RequestContext rc, String action, long userId) {
         Principal p = principal(rc);
-        return p != null && authorizer.allow(p, Authorizer.ACTION_ACT_AS_USER, Long.toString(userId));
+        return p != null && authorizer.allow(p, action, Long.toString(userId));
     }
 
     // ==================== Demo auth (OMS_AUTH_MODE=demo) ====================
@@ -354,7 +354,8 @@ public class RestApiHandler extends SimpleChannelInboundHandler<FullHttpRequest>
      */
     private boolean deniedOrderAccess(RequestContext rc, long omsOrderId) {
         OrderResponse existing = orderService.getOrder(omsOrderId);
-        if (existing != null && !canActAs(rc, existing.getUserId())) {
+        if (existing != null && !canPerformAs(
+                rc, Authorizer.ACTION_TRADE_AS_USER, existing.getUserId())) {
             sendError(rc, HttpResponseStatus.NOT_FOUND, ERR_NOT_FOUND, "Order not found");
             return true;
         }
@@ -432,7 +433,7 @@ public class RestApiHandler extends SimpleChannelInboundHandler<FullHttpRequest>
         // honored when the principal may act as that user (0 = unspecified).
         Principal p = principal(rc);
         long userId = p == null ? req.getUserId() : p.resolveUserId(req.getUserId());
-        if (!canActAs(rc, userId)) {
+        if (!canPerformAs(rc, Authorizer.ACTION_TRADE_AS_USER, userId)) {
             audit(rc, "order.create", "user:" + userId, false, "forbidden");
             sendForbidden(rc, userId);
             return;
@@ -532,7 +533,7 @@ public class RestApiHandler extends SimpleChannelInboundHandler<FullHttpRequest>
         String idStr = uri.substring("/api/v1/orders/".length());
         long omsOrderId = Long.parseLong(idStr);
         OrderResponse resp = orderService.getOrder(omsOrderId);
-        if (resp == null || !canActAs(rc, resp.getUserId())) {
+        if (resp == null || !canPerformAs(rc, Authorizer.ACTION_READ_AS_USER, resp.getUserId())) {
             sendError(rc, HttpResponseStatus.NOT_FOUND, ERR_NOT_FOUND, "Order not found");
         } else {
             sendResponse(rc, HttpResponseStatus.OK, MAPPER.writeValueAsString(resp));
@@ -616,7 +617,7 @@ public class RestApiHandler extends SimpleChannelInboundHandler<FullHttpRequest>
             sendError(rc, HttpResponseStatus.BAD_REQUEST, ERR_VALIDATION, "userId must be an integer");
             return null;
         }
-        if (!canActAs(rc, userId)) {
+        if (!canPerformAs(rc, Authorizer.ACTION_READ_AS_USER, userId)) {
             sendForbidden(rc, userId);
             return null;
         }
@@ -649,7 +650,7 @@ public class RestApiHandler extends SimpleChannelInboundHandler<FullHttpRequest>
             idStr = idStr.substring(0, slash);
         }
         long userId = Long.parseLong(idStr);
-        if (!canActAs(rc, userId)) {
+        if (!canPerformAs(rc, Authorizer.ACTION_READ_AS_USER, userId)) {
             sendForbidden(rc, userId);
             return;
         }
@@ -664,13 +665,17 @@ public class RestApiHandler extends SimpleChannelInboundHandler<FullHttpRequest>
             sendError(rc, HttpResponseStatus.UNAUTHORIZED, ERR_UNAUTHORIZED, "Unauthorized");
             return;
         }
+        if (!canPerformAs(rc, Authorizer.ACTION_READ_AS_USER, p.userId())) {
+            sendForbidden(rc, p.userId());
+            return;
+        }
         var balances = orderService.getBalances(p.userId());
         sendResponse(rc, HttpResponseStatus.OK, MAPPER.writeValueAsString(balances));
     }
 
     private void handleDeposit(RequestContext rc, String uri, FullHttpRequest request) throws Exception {
         long userId = extractAccountUserId(uri);
-        if (!canActAs(rc, userId)) {
+        if (!canPerformAs(rc, Authorizer.ACTION_FUND_AS_USER, userId)) {
             sendForbidden(rc, userId);
             return;
         }
@@ -690,7 +695,7 @@ public class RestApiHandler extends SimpleChannelInboundHandler<FullHttpRequest>
 
     private void handleWithdraw(RequestContext rc, String uri, FullHttpRequest request) throws Exception {
         long userId = extractAccountUserId(uri);
-        if (!canActAs(rc, userId)) {
+        if (!canPerformAs(rc, Authorizer.ACTION_FUND_AS_USER, userId)) {
             sendForbidden(rc, userId);
             return;
         }

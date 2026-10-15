@@ -38,9 +38,10 @@ import static org.mockito.Mockito.*;
  */
 class RestApiHandlerAuthTest {
 
-    // userA-key → user 1 (plain), admin-key → user 2 with ADMIN
+    // userA-key -> user 1 (plain), admin-key -> user 2, maker-key -> trading-only user 910001
     private static final ApiKeyAuthenticationProvider PROVIDER =
-            ApiKeyAuthenticationProvider.parse("userA-key:1;admin-key:2:ADMIN", "");
+            ApiKeyAuthenticationProvider.parse(
+                    "userA-key:1;admin-key:2:ADMIN;maker-key:910001:MARKET_MAKER", "");
 
     private OrderService orderService;
     private AdminService adminService;
@@ -180,5 +181,43 @@ class RestApiHandlerAuthTest {
         assertEquals(HttpResponseStatus.OK,
                 exchange(request(HttpMethod.GET, "/api/v1/admin/risk/config", null, "admin-key")).status());
         verify(adminService).getAllRiskConfigs();
+    }
+
+    @Test
+    void marketMakerCanReadAndTradeOnlyItsOwnAccount() {
+        when(orderService.getBalances(910001L)).thenReturn(Collections.emptyMap());
+        when(orderService.createOrder(any())).thenReturn(CreateOrderResponse.accepted(77, "NEW"));
+
+        assertEquals(HttpResponseStatus.OK,
+                exchange(request(HttpMethod.GET, "/api/v1/accounts/910001", null, "maker-key")).status());
+        assertEquals(HttpResponseStatus.CREATED,
+                exchange(request(HttpMethod.POST, "/api/v1/orders",
+                        "{\"userId\":910001,\"marketId\":1,\"side\":\"BUY\","
+                                + "\"orderType\":\"LIMIT\",\"price\":\"100\",\"quantity\":\"1\"}",
+                        "maker-key")).status());
+        assertEquals(HttpResponseStatus.FORBIDDEN,
+                exchange(request(HttpMethod.GET, "/api/v1/accounts/910002", null, "maker-key")).status());
+        assertEquals(HttpResponseStatus.FORBIDDEN,
+                exchange(request(HttpMethod.POST, "/api/v1/orders",
+                        "{\"userId\":910002,\"marketId\":1}", "maker-key")).status());
+
+        verify(orderService).getBalances(910001L);
+        verify(orderService).createOrder(any());
+        verify(orderService, never()).getBalances(910002L);
+    }
+
+    @Test
+    void marketMakerCannotDepositOrWithdrawEvenFromItsOwnAccount() {
+        String body = "{\"assetId\":0,\"amount\":\"1000000\"}";
+
+        assertEquals(HttpResponseStatus.FORBIDDEN,
+                exchange(request(HttpMethod.POST, "/api/v1/accounts/910001/deposit",
+                        body, "maker-key")).status());
+        assertEquals(HttpResponseStatus.FORBIDDEN,
+                exchange(request(HttpMethod.POST, "/api/v1/accounts/910001/withdraw",
+                        body, "maker-key")).status());
+
+        verify(orderService, never()).deposit(anyLong(), anyInt(), anyLong());
+        verify(orderService, never()).withdraw(anyLong(), anyInt(), anyLong());
     }
 }

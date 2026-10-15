@@ -17,7 +17,8 @@ final class GrpcAuth {
      * none) and enforce authorization. On denial errors the observer with
      * PERMISSION_DENIED and returns null.
      */
-    static Long resolveUserId(Authorizer authorizer, long requestedUserId, StreamObserver<?> responseObserver) {
+    static Long resolveUserId(Authorizer authorizer, String action, long requestedUserId,
+                              StreamObserver<?> responseObserver) {
         Principal principal = GrpcAuthInterceptor.PRINCIPAL.get();
         if (principal == null) {
             responseObserver.onError(Status.UNAUTHENTICATED
@@ -25,7 +26,7 @@ final class GrpcAuth {
             return null;
         }
         long userId = principal.resolveUserId(requestedUserId);
-        if (!authorizer.allow(principal, Authorizer.ACTION_ACT_AS_USER, Long.toString(userId))) {
+        if (!authorizer.allow(principal, action, Long.toString(userId))) {
             responseObserver.onError(Status.PERMISSION_DENIED
                     .withDescription("Cannot act as user " + userId).asRuntimeException());
             return null;
@@ -34,9 +35,9 @@ final class GrpcAuth {
     }
 
     /** Whether the calling principal may act as the given user (no error emission). */
-    static boolean canActAs(Authorizer authorizer, long userId) {
+    static boolean canActAs(Authorizer authorizer, String action, long userId) {
         Principal principal = GrpcAuthInterceptor.PRINCIPAL.get();
         return principal != null
-                && authorizer.allow(principal, Authorizer.ACTION_ACT_AS_USER, Long.toString(userId));
+                && authorizer.allow(principal, action, Long.toString(userId));
     }
 }

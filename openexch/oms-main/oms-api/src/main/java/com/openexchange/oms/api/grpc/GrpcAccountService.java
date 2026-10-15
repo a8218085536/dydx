@@ -41,7 +41,8 @@ public class GrpcAccountService extends AccountServiceGrpc.AccountServiceImplBas
     public void getBalances(GetBalancesRequest request,
                              StreamObserver<BalancesResponse> responseObserver) {
         try {
-            Long allowed = GrpcAuth.resolveUserId(authorizer, request.getUserId(), responseObserver);
+            Long allowed = GrpcAuth.resolveUserId(authorizer, Authorizer.ACTION_READ_AS_USER,
+                    request.getUserId(), responseObserver);
             if (allowed == null) return;
             long userId = allowed;
             Map<String, Object> balances = orderService.getBalances(userId);
@@ -74,7 +75,8 @@ public class GrpcAccountService extends AccountServiceGrpc.AccountServiceImplBas
 
     @Override
     public void streamBalances(StreamRequest request, StreamObserver<BalanceUpdate> responseObserver) {
-        Long allowed = GrpcAuth.resolveUserId(authorizer, request.getUserId(), responseObserver);
+        Long allowed = GrpcAuth.resolveUserId(authorizer, Authorizer.ACTION_READ_AS_USER,
+                request.getUserId(), responseObserver);
         if (allowed == null) return;
         long userId = allowed;
         Set<StreamObserver<BalanceUpdate>> observers =
