@@ -184,6 +184,15 @@ for mode in zero partial exact over locked active failed; do
       ;;
     failed)
       [[ "$status" != 0 ]] || fail "failed deposit was ignored"
+      marker="$ACCOUNTS.outcome-unknown"
+      [[ -f "$marker" ]] || fail "failed deposit did not leave an outcome-unknown marker"
+      retry_output="$TMP/failed-retry.out"
+      retry_calls="$TMP/failed-retry.calls"
+      retry_state="$TMP/failed-retry.state"
+      retry_status=$(run_case "zero" "$retry_output" "$retry_calls" "$retry_state")
+      [[ "$retry_status" != 0 ]] || fail "outcome-unknown retry was not blocked"
+      ! grep -q '^POST ' "$retry_calls" || fail "outcome-unknown retry made another deposit"
+      rm -f "$marker"
       ;;
   esac
   grep -q '^CONFIG_MODE 600$' "$calls" || fail "$mode curl config was not mode 0600"

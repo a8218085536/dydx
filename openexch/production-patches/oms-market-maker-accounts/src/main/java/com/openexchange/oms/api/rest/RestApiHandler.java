@@ -154,6 +154,8 @@ extends SimpleChannelInboundHandler<FullHttpRequest> {
                 this.handleLogin(requestContext, fullHttpRequest);
             } else if (string.equals("/api/v1/auth/me") && httpMethod == HttpMethod.GET) {
                 this.handleMe(requestContext);
+            } else if (string.equals("/api/v1/balances") && httpMethod == HttpMethod.GET) {
+                this.handleGetBalances(requestContext);
             } else if (string.equals("/api/v1/deposit-addresses") && httpMethod == HttpMethod.GET) {
                 this.handleGetDepositAddresses(requestContext);
             } else if (string.equals("/api/v1/internal/deposits/neco") && httpMethod == HttpMethod.POST) {
@@ -244,6 +246,9 @@ extends SimpleChannelInboundHandler<FullHttpRequest> {
         }
         if (string2.equals("/api/v1/auth/me")) {
             return "auth.me";
+        }
+        if (string2.equals("/api/v1/balances")) {
+            return "balances";
         }
         if (string2.equals("/api/v1/deposit-addresses")) {
             return "deposit-addresses";
@@ -1068,6 +1073,22 @@ extends SimpleChannelInboundHandler<FullHttpRequest> {
             return;
         }
         Map<String, Object> map = this.orderService.getBalances(l);
+        this.sendResponse(requestContext, HttpResponseStatus.OK, MAPPER.writeValueAsString(map));
+    }
+
+    private void handleGetBalances(RequestContext requestContext) throws Exception {
+        Principal principal = this.principal(requestContext);
+        if (principal == null) {
+            this.sendError(requestContext, HttpResponseStatus.UNAUTHORIZED,
+                    ERR_UNAUTHORIZED, "Unauthorized");
+            return;
+        }
+        if (!this.canPerformAs(
+                requestContext, Authorizer.ACTION_READ_AS_USER, principal.userId())) {
+            this.sendForbidden(requestContext, principal.userId());
+            return;
+        }
+        Map<String, Object> map = this.orderService.getBalances(principal.userId());
         this.sendResponse(requestContext, HttpResponseStatus.OK, MAPPER.writeValueAsString(map));
     }
 

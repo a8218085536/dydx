@@ -50,6 +50,10 @@
             <version>${project.version}</version>
         </dependency>
         <dependency>
+            <groupId>io.lettuce</groupId>
+            <artifactId>lettuce-core</artifactId>
+        </dependency>
+        <dependency>
             <groupId>com.match</groupId>
             <artifactId>match-common</artifactId>
         </dependency>

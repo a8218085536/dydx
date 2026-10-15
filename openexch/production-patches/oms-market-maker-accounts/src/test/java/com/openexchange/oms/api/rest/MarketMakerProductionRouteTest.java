@@ -40,11 +40,24 @@ public final class MarketMakerProductionRouteTest {
     }
 
     public static void main(String[] args) {
+        marketMakerCanReadOwnBalancesShortcut();
         marketMakerCannotCreditInternalDeposit();
         marketMakerCannotWithdrawToNeco();
         marketMakerCannotWithdrawThroughBridge();
         ordinaryTychePrincipalRetainsWithdrawalAccess();
         System.out.println("PASS: production money routes enforce MARKET_MAKER denial");
+    }
+
+    private static void marketMakerCanReadOwnBalancesShortcut() {
+        AtomicInteger orderCalls = new AtomicInteger();
+        TestServices services = services(orderCalls, new AtomicInteger(), new AtomicInteger());
+        FullHttpResponse response = exchange(services, maker(), HttpMethod.GET,
+                "/api/v1/balances", "");
+
+        require(response.status().equals(HttpResponseStatus.OK),
+                "MARKET_MAKER balance shortcut must return 200, got " + response.status());
+        require(orderCalls.get() == 1, "balance shortcut must read the authenticated account");
+        response.release();
     }
 
     private static void marketMakerCannotCreditInternalDeposit() {
@@ -123,7 +136,12 @@ public final class MarketMakerProductionRouteTest {
 
     private static TestServices services(
             AtomicInteger depositCalls, AtomicInteger withdrawalCalls) {
-        OrderService orders = proxy(OrderService.class, new AtomicInteger());
+        return services(new AtomicInteger(), depositCalls, withdrawalCalls);
+    }
+
+    private static TestServices services(
+            AtomicInteger orderCalls, AtomicInteger depositCalls, AtomicInteger withdrawalCalls) {
+        OrderService orders = proxy(OrderService.class, orderCalls);
         InternalDepositService deposits = proxy(InternalDepositService.class, depositCalls);
         NecoWithdrawalService withdrawals = proxy(NecoWithdrawalService.class, withdrawalCalls);
         return new TestServices(orders, deposits, withdrawals);

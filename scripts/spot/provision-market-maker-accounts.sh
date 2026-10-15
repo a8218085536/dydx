@@ -35,6 +35,10 @@ command -v jq >/dev/null 2>&1 || die "jq is required"
 [[ -r "$accounts_file" ]] || die "accounts file is not readable"
 [[ -r "$seed_key_file" ]] || die "seed key file is not readable"
 
+outcome_marker="${accounts_file}.outcome-unknown"
+[[ ! -e "$outcome_marker" ]] || die \
+  "an earlier deposit has unknown outcome; reconcile the authoritative Assets Engine state before removing $outcome_marker"
+
 case "$base_url" in
   https://*) ;;
   http://127.0.0.1:*|http://localhost:*|http://\[::1\]:*) ;;
@@ -82,6 +86,23 @@ api_get() {
 api_post() {
   curl --silent --show-error --fail-with-body --config "$curl_config" \
     --request POST --url "$1" --data "$2"
+}
+
+mark_outcome_unknown() {
+  local label=$1 user_id=$2 asset_id=$3 current=$4 delta=$5 marker_tmp
+  marker_tmp="${outcome_marker}.tmp.$$"
+  umask 077
+  {
+    printf 'status=OUTCOME_UNKNOWN\n'
+    printf 'label=%s\n' "$label"
+    printf 'userId=%s\n' "$user_id"
+    printf 'assetId=%s\n' "$asset_id"
+    printf 'observedBefore=%s\n' "$current"
+    printf 'requestedDelta=%s\n' "$delta"
+    printf 'createdAtUtc=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  } > "$marker_tmp"
+  chmod 600 "$marker_tmp"
+  mv -f "$marker_tmp" "$outcome_marker"
 }
 
 declare -a labels=()
@@ -151,8 +172,10 @@ while IFS=$'\t' read -r label user_id asset_id current_fp; do
   fi
   delta=$(fp_to_decimal "$delta_fp")
   body=$(printf '{"assetId":%s,"amount":"%s"}' "$asset_id" "$delta")
-  api_post "$base_url/api/v1/accounts/$user_id/deposit" "$body" >/dev/null \
-    || die "deposit failed for $label ($user_id) assetId $asset_id"
+  if ! api_post "$base_url/api/v1/accounts/$user_id/deposit" "$body" >/dev/null; then
+    mark_outcome_unknown "$label" "$user_id" "$asset_id" "$current" "$delta"
+    die "deposit outcome unknown for $label ($user_id) assetId $asset_id; reconcile Assets Engine before retrying"
+  fi
   printf '%s userId=%s assetId=%s current=%s deposit=%s status=FUNDED\n' \
     "$label" "$user_id" "$asset_id" "$current" "$delta"
 done < "$snapshot"
