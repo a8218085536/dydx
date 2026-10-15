@@ -12,6 +12,12 @@ import com.openexchange.oms.core.OmsCoreEngine;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.util.Comparator;
+import java.util.HashMap;
+import java.util.Map;
+import java.util.NavigableSet;
+import java.util.TreeSet;
+
 /**
  * Bridges ClusterClient egress callbacks to OmsCoreEngine.
  */
@@ -21,6 +27,8 @@ public class OmsEgressAdapter implements EgressListener {
 
     private final OmsCoreEngine coreEngine;
     private final OmsMarketDataProvider marketDataProvider;
+    private final Map<Integer, NavigableSet<Long>> bidLevelsByMarket = new HashMap<>();
+    private final Map<Integer, NavigableSet<Long>> askLevelsByMarket = new HashMap<>();
     private volatile boolean connected;
 
     // ---- P1.2 (oms#34 / match#31): statusSeq gap detection + snapshot repair ----
@@ -314,51 +322,47 @@ public class OmsEgressAdapter implements EgressListener {
 
     @Override
     public void onBookDelta(int marketId, BookDeltaDecoder decoder) {
-        long bestBid = 0;
-        long bestAsk = 0;
+        NavigableSet<Long> bidLevels = bidLevelsByMarket.computeIfAbsent(
+                marketId, ignored -> new TreeSet<>(Comparator.reverseOrder()));
+        NavigableSet<Long> askLevels = askLevelsByMarket.computeIfAbsent(
+                marketId, ignored -> new TreeSet<>());
 
         for (BookDeltaDecoder.ChangesDecoder change : decoder.changes()) {
-            // Skip removed levels (quantity=0) — they are not valid best prices
-            if (change.quantity() == 0) continue;
-
-            if (change.side() == OrderSide.BID) {
-                if (change.price() > bestBid) {
-                    bestBid = change.price();
-                }
-            } else if (change.side() == OrderSide.ASK) {
-                if (bestAsk == 0 || change.price() < bestAsk) {
-                    bestAsk = change.price();
-                }
+            NavigableSet<Long> levels = change.side() == OrderSide.BID ? bidLevels : askLevels;
+            if (change.quantity() == 0) {
+                levels.remove(change.price());
+            } else {
+                levels.add(change.price());
             }
         }
 
-        if (bestBid > 0 || bestAsk > 0) {
-            marketDataProvider.update(marketId, bestBid, bestAsk);
-            coreEngine.onMarketDataUpdate(marketId, bestBid, bestAsk);
-        }
+        publishTopOfBook(marketId, bidLevels, askLevels);
     }
 
     @Override
     public void onBookSnapshot(int marketId, BookSnapshotDecoder decoder) {
-        long bestBid = 0;
-        long bestAsk = 0;
+        NavigableSet<Long> bidLevels = new TreeSet<>(Comparator.reverseOrder());
+        NavigableSet<Long> askLevels = new TreeSet<>();
 
         for (BookSnapshotDecoder.BidsDecoder bid : decoder.bids()) {
-            if (bid.price() > bestBid) {
-                bestBid = bid.price();
-            }
+            bidLevels.add(bid.price());
         }
 
         for (BookSnapshotDecoder.AsksDecoder ask : decoder.asks()) {
-            if (bestAsk == 0 || ask.price() < bestAsk) {
-                bestAsk = ask.price();
-            }
+            askLevels.add(ask.price());
         }
 
-        if (bestBid > 0 || bestAsk > 0) {
-            marketDataProvider.update(marketId, bestBid, bestAsk);
-            coreEngine.onMarketDataUpdate(marketId, bestBid, bestAsk);
-        }
+        bidLevelsByMarket.put(marketId, bidLevels);
+        askLevelsByMarket.put(marketId, askLevels);
+        publishTopOfBook(marketId, bidLevels, askLevels);
+    }
+
+    private void publishTopOfBook(int marketId, NavigableSet<Long> bidLevels,
+                                  NavigableSet<Long> askLevels) {
+        long bestBid = bidLevels.isEmpty() ? 0 : bidLevels.first();
+        long bestAsk = askLevels.isEmpty() ? 0 : askLevels.first();
+        marketDataProvider.update(marketId, bestBid, bestAsk);
+        coreEngine.onMarketDataUpdate(marketId, bestBid, bestAsk);
     }
 
     @Override

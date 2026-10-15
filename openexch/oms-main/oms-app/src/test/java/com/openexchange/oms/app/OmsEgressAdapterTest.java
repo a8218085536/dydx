@@ -1,9 +1,19 @@
 // SPDX-License-Identifier: Apache-2.0
 package com.openexchange.oms.app;
 
+import com.match.domain.FixedPoint;
+import com.match.infrastructure.generated.BookDeltaDecoder;
+import com.match.infrastructure.generated.BookDeltaEncoder;
+import com.match.infrastructure.generated.BookSnapshotDecoder;
+import com.match.infrastructure.generated.BookSnapshotEncoder;
+import com.match.infrastructure.generated.BookUpdateType;
+import com.match.infrastructure.generated.MessageHeaderDecoder;
+import com.match.infrastructure.generated.MessageHeaderEncoder;
+import com.match.infrastructure.generated.OrderSide;
 import com.openexchange.oms.core.OmsCoreEngine;
 import com.openexchange.oms.core.OrderLifecycleManager;
 import com.openexchange.oms.core.SyntheticOrderEngine;
+import org.agrona.ExpandableDirectByteBuffer;
 import org.junit.jupiter.api.Test;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -17,6 +27,91 @@ import static org.junit.jupiter.api.Assertions.assertNull;
  * maps to a string or null, and no code (including unknown/future ones) throws.</p>
  */
 class OmsEgressAdapterTest {
+
+    @Test
+    void askOnlyDeltaPreservesBestBidFromSnapshot() {
+        OmsMarketDataProvider marketData = new OmsMarketDataProvider();
+        OmsEgressAdapter adapter = new OmsEgressAdapter(
+                new OmsCoreEngine(new OrderLifecycleManager(), new SyntheticOrderEngine()),
+                marketData);
+
+        adapter.onBookSnapshot(1, snapshot(1, new double[][] {{100.0, 2.0}},
+                new double[][] {{101.0, 3.0}}));
+        adapter.onBookDelta(1, delta(1, OrderSide.ASK, BookUpdateType.UPDATE_LEVEL,
+                101.0, 4.0));
+
+        assertEquals(FixedPoint.fromDouble(100.0), marketData.getBestBid(1));
+        assertEquals(FixedPoint.fromDouble(101.0), marketData.getBestAsk(1));
+    }
+
+    @Test
+    void removingBestBidPromotesNextBid() {
+        OmsMarketDataProvider marketData = new OmsMarketDataProvider();
+        OmsEgressAdapter adapter = new OmsEgressAdapter(
+                new OmsCoreEngine(new OrderLifecycleManager(), new SyntheticOrderEngine()),
+                marketData);
+
+        adapter.onBookSnapshot(1, snapshot(1,
+                new double[][] {{100.0, 2.0}, {99.0, 5.0}},
+                new double[][] {{101.0, 3.0}}));
+        adapter.onBookDelta(1, delta(1, OrderSide.BID, BookUpdateType.DELETE_LEVEL,
+                100.0, 0.0));
+
+        assertEquals(FixedPoint.fromDouble(99.0), marketData.getBestBid(1));
+        assertEquals(FixedPoint.fromDouble(101.0), marketData.getBestAsk(1));
+    }
+
+    private static BookSnapshotDecoder snapshot(int marketId, double[][] bids, double[][] asks) {
+        ExpandableDirectByteBuffer buffer = new ExpandableDirectByteBuffer(4096);
+        MessageHeaderEncoder headerEncoder = new MessageHeaderEncoder();
+        BookSnapshotEncoder encoder = new BookSnapshotEncoder();
+        encoder.wrapAndApplyHeader(buffer, 0, headerEncoder)
+                .marketId(marketId)
+                .timestamp(System.currentTimeMillis())
+                .bidVersion(1)
+                .askVersion(1)
+                .bookVersion(1);
+        BookSnapshotEncoder.BidsEncoder bidEncoder = encoder.bidsCount(bids.length);
+        for (double[] bid : bids) {
+            bidEncoder.next()
+                    .price(FixedPoint.fromDouble(bid[0]))
+                    .quantity(FixedPoint.fromDouble(bid[1]))
+                    .orderCount(1);
+        }
+        BookSnapshotEncoder.AsksEncoder askEncoder = encoder.asksCount(asks.length);
+        for (double[] ask : asks) {
+            askEncoder.next()
+                    .price(FixedPoint.fromDouble(ask[0]))
+                    .quantity(FixedPoint.fromDouble(ask[1]))
+                    .orderCount(1);
+        }
+        MessageHeaderDecoder headerDecoder = new MessageHeaderDecoder();
+        headerDecoder.wrap(buffer, 0);
+        return new BookSnapshotDecoder().wrapAndApplyHeader(buffer, 0, headerDecoder);
+    }
+
+    private static BookDeltaDecoder delta(int marketId, OrderSide side, BookUpdateType updateType,
+                                           double price, double quantity) {
+        ExpandableDirectByteBuffer buffer = new ExpandableDirectByteBuffer(1024);
+        MessageHeaderEncoder headerEncoder = new MessageHeaderEncoder();
+        BookDeltaEncoder encoder = new BookDeltaEncoder();
+        encoder.wrapAndApplyHeader(buffer, 0, headerEncoder)
+                .marketId(marketId)
+                .timestamp(System.currentTimeMillis())
+                .bidVersion(2)
+                .askVersion(2)
+                .bookVersion(2)
+                .fromVersion(1);
+        encoder.changesCount(1).next()
+                .price(FixedPoint.fromDouble(price))
+                .quantity(FixedPoint.fromDouble(quantity))
+                .orderCount(quantity > 0 ? 1 : 0)
+                .side(side)
+                .updateType(updateType);
+        MessageHeaderDecoder headerDecoder = new MessageHeaderDecoder();
+        headerDecoder.wrap(buffer, 0);
+        return new BookDeltaDecoder().wrapAndApplyHeader(buffer, 0, headerDecoder);
+    }
 
     // ---- Layer 2: egressSeq reorder metric ----
     // egressSeq is an ORDER KEY ONLY: monotonic non-decreasing in cluster-log order, but sparse
