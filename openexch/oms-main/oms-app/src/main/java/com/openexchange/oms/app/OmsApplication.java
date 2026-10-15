@@ -47,6 +47,7 @@ import com.openexchange.oms.assets.AssetsClusterClient;
 import com.openexchange.oms.persistence.PostgresOrderRepository;
 import com.openexchange.oms.persistence.PostgresExecutionRepository;
 import com.openexchange.oms.persistence.PostgresUserRepository;
+import com.openexchange.oms.persistence.PostgresTycheUserMappingRepository;
 import com.openexchange.oms.persistence.PostgresBalanceReadModelStore;
 import com.openexchange.oms.persistence.PostgresRiskConfigStore;
 import com.zaxxer.hikari.HikariConfig;
@@ -76,6 +77,8 @@ public class OmsApplication {
     private AssetsHoldReconciler assetsHoldReconciler;
     /** The CQRS balance read-model writer (E6); set when PG is present. */
     private PgBalanceReadModelWriter balanceReadModelWriter;
+    /** Closeable auth resources, currently the Tyche Redis connection. */
+    private AutoCloseable authProviderCloseable;
 
     public static void main(String[] args) {
         OmsApplication app = new OmsApplication();
@@ -471,7 +474,10 @@ public class OmsApplication {
         AuthService demoAuthService = "demo".equals(config.authMode())
                 ? new DemoAuthService(userRepo, orderService)
                 : null;
-        AuthenticationProvider authProvider = buildAuthProvider(config, demoAuthService);
+        AuthenticationProvider authProvider = buildAuthProvider(config, demoAuthService, dataSource);
+        if (authProvider instanceof AutoCloseable closeable) {
+            authProviderCloseable = closeable;
+        }
 
         // 12b. Operational gauges (oms#38)
         Gauge.builder("oms_active_orders", orderService, OrderService::getActiveOrderCount)
@@ -724,7 +730,8 @@ public class OmsApplication {
         return store.isProjectionReady(); // one last check in case readiness landed at the wire
     }
 
-    private static AuthenticationProvider buildAuthProvider(OmsConfig config, AuthService demoAuthService) {
+    static AuthenticationProvider buildAuthProvider(
+            OmsConfig config, AuthService demoAuthService, HikariDataSource dataSource) {
         switch (config.authMode()) {
             case "dev":
                 log.warn("AUTH: dev mode — every request is accepted with caller-chosen identity. "
@@ -737,6 +744,49 @@ public class OmsApplication {
             case "jwt":
                 log.info("AUTH: jwt mode (HS256)");
                 return new JwtAuthenticationProvider(config.jwtSecret());
+            case "tyche":
+                if (dataSource == null) {
+                    throw new IllegalStateException(
+                            "OMS_AUTH_MODE=tyche requires PostgreSQL for Tyche-to-OMS user mapping");
+                }
+                if (config.tycheRedisNamespace() == null
+                        || config.tycheRedisNamespace().isBlank()) {
+                    throw new IllegalArgumentException(
+                            "TYCHE_REDIS_NAMESPACE is required for OMS_AUTH_MODE=tyche; "
+                                    + "use Tyche redis.domain + ':' + tyche.account");
+                }
+                log.info("AUTH: tyche mode — accepting Tyche FlyDEX wallet-login session tokens");
+                TycheRedisSessionValidator sessions = new TycheRedisSessionValidator(
+                        config.tycheRedisUri(), config.tycheRedisNamespace());
+                PostgresTycheUserMappingRepository users =
+                        new PostgresTycheUserMappingRepository(dataSource);
+                return new TycheAuthenticationProvider(sessions, users::findOrCreateOmsUserId);
+            case "tyche-api-key":
+                if (dataSource == null) {
+                    throw new IllegalStateException(
+                            "OMS_AUTH_MODE=tyche-api-key requires PostgreSQL for Tyche-to-OMS user mapping");
+                }
+                if (config.tycheRedisNamespace() == null
+                        || config.tycheRedisNamespace().isBlank()) {
+                    throw new IllegalArgumentException(
+                            "TYCHE_REDIS_NAMESPACE is required for OMS_AUTH_MODE=tyche-api-key; "
+                                    + "use Tyche redis.domain + ':' + tyche.account");
+                }
+                ApiKeyAuthenticationProvider marketMakerKeys =
+                        ApiKeyAuthenticationProvider.parse(config.apiKeys(), config.apiKeysFile());
+                if (marketMakerKeys.isEmpty()) {
+                    throw new IllegalArgumentException(
+                            "OMS_AUTH_MODE=tyche-api-key requires OMS_API_KEYS or OMS_API_KEYS_FILE");
+                }
+                log.info("AUTH: tyche-api-key mode — accepting Tyche sessions and dedicated API keys");
+                TycheRedisSessionValidator hybridSessions = new TycheRedisSessionValidator(
+                        config.tycheRedisUri(), config.tycheRedisNamespace());
+                PostgresTycheUserMappingRepository hybridUsers =
+                        new PostgresTycheUserMappingRepository(dataSource);
+                return new TycheApiKeyAuthenticationProvider(
+                        marketMakerKeys,
+                        new TycheAuthenticationProvider(
+                                hybridSessions, hybridUsers::findOrCreateOmsUserId));
             case "api-key":
                 ApiKeyAuthenticationProvider provider =
                         ApiKeyAuthenticationProvider.parse(config.apiKeys(), config.apiKeysFile());
@@ -750,7 +800,8 @@ public class OmsApplication {
                 return provider;
             default:
                 throw new IllegalArgumentException(
-                        "Unknown OMS_AUTH_MODE '" + config.authMode() + "' (expected api-key, jwt, demo, or dev)");
+                        "Unknown OMS_AUTH_MODE '" + config.authMode()
+                                + "' (expected api-key, jwt, tyche, tyche-api-key, demo, or dev)");
         }
     }
 
@@ -783,6 +834,14 @@ public class OmsApplication {
         // still dirty so the mirror is current at graceful shutdown.
         if (balanceReadModelWriter != null) {
             balanceReadModelWriter.stop();
+        }
+
+        if (authProviderCloseable != null) {
+            try {
+                authProviderCloseable.close();
+            } catch (Exception e) {
+                log.warn("Authentication provider close failed: {}", e.getMessage());
+            }
         }
 
         if (auditLog != null) {

@@ -6,8 +6,9 @@ package com.openexchange.oms.app;
  *
  * Auth (oms#36): authMode selects the AuthenticationProvider — "api-key"
  * (secure default; with no keys configured every request is rejected),
- * "jwt" (HS256, requires jwtSecret), or "dev" (accepts everything — must be
- * opted into explicitly, never production).
+ * "jwt" (HS256, requires jwtSecret), "tyche" (Tyche wallet-login sessions),
+ * "tyche-api-key" (Tyche sessions plus dedicated service keys), or "dev"
+ * (accepts everything — must be opted into explicitly, never production).
  *
  * Balance store: the Assets Engine cluster is the money authority — there is
  * no alternative and nothing to select. The AE tunables
@@ -43,6 +44,8 @@ public record OmsConfig(
     long aeConnectTimeoutMs,
     String balanceFeedChannel,
     int balanceFeedStreamId,
+    String tycheRedisUri,
+    String tycheRedisNamespace,
     String marketGatewayUrl
 ) {
     public static OmsConfig loadDefaults() {
@@ -72,6 +75,8 @@ public record OmsConfig(
             prop("BALANCE_FEED_CHANNEL", ""),
             intProp("BALANCE_FEED_STREAM_ID",
                 com.openexchange.oms.assets.AssetsClusterClient.DEFAULT_BALANCE_FEED_STREAM_ID),
+            prop("TYCHE_REDIS_URI", "redis://127.0.0.1:6379/0"),
+            prop("TYCHE_REDIS_NAMESPACE", ""),
             prop("OMS_MARKET_GATEWAY_URL", "http://127.0.0.1:8081")
         );
     }

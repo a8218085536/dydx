@@ -25,6 +25,8 @@ class OmsConfigTest {
     private static final String ACK_TIMEOUT_PROP = "oms.ae.ack.timeout.ms";
     private static final String CONNECT_TIMEOUT_PROP = "oms.ae.connect.timeout.ms";
     private static final String MARKET_GATEWAY_URL_PROP = "oms.market.gateway.url";
+    private static final String TYCHE_REDIS_URI_PROP = "tyche.redis.uri";
+    private static final String TYCHE_REDIS_NAMESPACE_PROP = "tyche.redis.namespace";
 
     @AfterEach
     void tearDown() {
@@ -32,6 +34,8 @@ class OmsConfigTest {
         System.clearProperty(ACK_TIMEOUT_PROP);
         System.clearProperty(CONNECT_TIMEOUT_PROP);
         System.clearProperty(MARKET_GATEWAY_URL_PROP);
+        System.clearProperty(TYCHE_REDIS_URI_PROP);
+        System.clearProperty(TYCHE_REDIS_NAMESPACE_PROP);
     }
 
     @Test
@@ -41,6 +45,8 @@ class OmsConfigTest {
         assertEquals(1000L, config.aeAckTimeoutMs());
         assertEquals(30_000L, config.aeConnectTimeoutMs());
         assertEquals("http://127.0.0.1:8081", config.marketGatewayUrl());
+        assertEquals("redis://127.0.0.1:6379/0", config.tycheRedisUri());
+        assertEquals("", config.tycheRedisNamespace());
     }
 
     @Test
@@ -65,6 +71,15 @@ class OmsConfigTest {
     void marketGatewayUrlOverride() {
         System.setProperty(MARKET_GATEWAY_URL_PROP, "http://127.0.0.1:28082");
         assertEquals("http://127.0.0.1:28082", OmsConfig.loadDefaults().marketGatewayUrl());
+    }
+
+    @Test
+    void tycheRedisOverrides() {
+        System.setProperty(TYCHE_REDIS_URI_PROP, "redis://127.0.0.1:6379/2");
+        System.setProperty(TYCHE_REDIS_NAMESPACE_PROP, "flydex:tyche:mainnet");
+        OmsConfig config = OmsConfig.loadDefaults();
+        assertEquals("redis://127.0.0.1:6379/2", config.tycheRedisUri());
+        assertEquals("flydex:tyche:mainnet", config.tycheRedisNamespace());
     }
 
     @Test
